@@ -14,13 +14,15 @@ the phased plan.
 
 ## Status
 
-Phase 1 (plumbing) + Phase 2 (provisioning): Web MIDI detection with a manual
-port picker, the connection state machine, the inspector
-status/diagnostics/debug panel, and **provisioning** — a minimal "hello"
-preset + Lua app is uploaded to a chosen (never-overwriting) slot and
-activated, so the device screen shows "Simularca vN". The surface renderers,
-the digit editor and the Simularca Surface Protocol land in later phases — see
-`SPEC.md §11`.
+Phases 1–3: Web MIDI detection + port picker, the connection state machine,
+the inspector status/diagnostics/debug panel, **provisioning** (uploads an
+8-slot surface preset + Lua app to a chosen, never-overwriting slot and
+activates it), and the **Simularca Surface Protocol** — the selected actor's
+inspector fields are pushed to the 8 device slots and device encoder edits are
+applied back through the host bridge (with loop-suppression). The host/protocol
+side is fully unit-tested; the device-side Lua rendering + encoder feedback is
+a first cut to tune against hardware. Semantic on-device editing (digit
+editor), vectors/enums and paging land in later phases — see `SPEC.md §11`.
 
 ## Install / build
 

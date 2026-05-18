@@ -1,0 +1,68 @@
+import { describe, expect, it } from "vitest";
+import {
+  clearCommand,
+  decodeDeviceLine,
+  decodeSurfacePayload,
+  encodeSurfacePayload,
+  sanitizeToken,
+  setActorCommand,
+  setFieldValueCommand,
+  type SurfaceDescriptor
+} from "../src/sspCodec";
+
+const desc: SurfaceDescriptor = {
+  actorId: "a1",
+  actorName: "Cube",
+  fields: [
+    { key: "on", idx: 0, kind: "toggle", label: "On", value: "1" },
+    { key: "size", idx: 1, kind: "number", label: "Size", value: "2.50", min: 0, max: 10, step: 0.5 },
+    { key: "mode", idx: 2, kind: "list", label: "Mode", value: "1", options: ["a", "b", "c"] }
+  ]
+};
+
+describe("sanitizeToken", () => {
+  it("strips quotes/backslash/control/non-ASCII and caps length", () => {
+    expect(sanitizeToken('a"b\\c')).toBe("a'b'c");
+    expect(sanitizeToken("xy\tz")).toBe("x y z");
+    expect(sanitizeToken("café")).toBe("caf");
+    expect(sanitizeToken("abcdefghij", 5)).toBe("abcd~");
+  });
+});
+
+describe("surface payload round-trip", () => {
+  it("decode(encode(x)) preserves fields", () => {
+    const round = decodeSurfacePayload(encodeSurfacePayload(desc));
+    expect(round?.actorName).toBe("Cube");
+    expect(round?.fields).toEqual([
+      { key: "", idx: 0, kind: "toggle", label: "On", value: "1", min: undefined, max: undefined, step: undefined, options: undefined },
+      { key: "", idx: 1, kind: "number", label: "Size", value: "2.50", min: 0, max: 10, step: 0.5, options: undefined },
+      { key: "", idx: 2, kind: "list", label: "Mode", value: "1", min: undefined, max: undefined, step: undefined, options: ["a", "b", "c"] }
+    ]);
+  });
+
+  it("decodeSurfacePayload rejects a non-A payload", () => {
+    expect(decodeSurfacePayload("nope")).toBeNull();
+  });
+});
+
+describe("command framing", () => {
+  it("wraps payloads in ssp(\"…\") with no literal-breaking chars", () => {
+    const cmd = setActorCommand(desc);
+    expect(cmd.startsWith('ssp("')).toBe(true);
+    expect(cmd.endsWith('")')).toBe(true);
+    expect(cmd.slice(5, -2)).not.toMatch(/["\\]/);
+    expect(setFieldValueCommand(3, "9")).toContain('ssp("V');
+    expect(clearCommand()).toBe('ssp("C")');
+  });
+});
+
+describe("decodeDeviceLine", () => {
+  it("parses value / ready / focus / log, ignores noise", () => {
+    expect(decodeDeviceLine("scp vc 4 0.75")).toEqual({ type: "value", idx: 4, value: "0.75" });
+    expect(decodeDeviceLine("scp focus 2")).toEqual({ type: "focus", idx: 2 });
+    expect(decodeDeviceLine("simularca:ready bundle=2")).toEqual({ type: "ready", bundle: 2 });
+    expect(decodeDeviceLine("scp ready bundle=3")).toEqual({ type: "ready", bundle: 3 });
+    expect(decodeDeviceLine("scp hello world")).toEqual({ type: "log", text: "hello world" });
+    expect(decodeDeviceLine("unrelated device chatter")).toBeNull();
+  });
+});

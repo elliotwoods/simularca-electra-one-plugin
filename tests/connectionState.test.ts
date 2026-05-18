@@ -68,7 +68,16 @@ function makeDevice(opts: DeviceOpts) {
       listeners.clear();
     }
   };
-  return { handle, sentKinds: () => sent };
+  return {
+    handle,
+    sentKinds: () => sent,
+    emit: (bytes: number[]) =>
+      queueMicrotask(() => {
+        for (const l of [...listeners]) {
+          l(bytes);
+        }
+      })
+  };
 }
 
 function fakeStorage() {
@@ -135,7 +144,7 @@ describe("provisioning", () => {
     const st = s.getState();
     expect(st.phase).toBe("ready");
     expect(st.onDeviceBundleVersion).toBe(SURFACE_BUNDLE_VERSION);
-    expect(st.presetSlot).toEqual({ bank: 0, slot: 0 });
+    expect(st.presetSlot).toEqual({ bank: 2, slot: 0 });
     expect(sentKinds()).not.toContain("UPLOAD_PRESET");
   });
 
@@ -153,7 +162,7 @@ describe("provisioning", () => {
     expect(sentKinds()).toContain("UPLOAD_PRESET");
     expect(sentKinds()).toContain("UPLOAD_LUA");
     expect(st.onDeviceBundleVersion).toBe(SURFACE_BUNDLE_VERSION);
-    expect(st.presetSlot).toEqual({ bank: 0, slot: 0 });
+    expect(st.presetSlot).toEqual({ bank: 2, slot: 0 });
   });
 
   it("refuses to overwrite a non-Simularca preset", async () => {
@@ -201,5 +210,57 @@ describe("controls + persistence", () => {
     s.switchPresetSlot(2, 3);
     const out = s.getState().midiMonitor.filter((m) => m.dir === "out");
     expect(out.at(-1)?.hex).toBe("f0 00 21 45 09 08 02 03 f7");
+  });
+});
+
+describe("surface (SSP)", () => {
+  const SNAP = {
+    id: "a1",
+    name: "Cube",
+    actorType: "mesh",
+    params: { on: true, size: 5 },
+    schema: {
+      id: "s",
+      title: "Cube",
+      params: [
+        { key: "on", label: "On", type: "boolean" as const },
+        { key: "size", label: "Size", type: "number" as const, min: 0, max: 10, step: 1 }
+      ]
+    }
+  };
+
+  it("sends SET_ACTOR once provisioned and applies device edits back", async () => {
+    const dev = makeDevice({ deviceInfo: GOOD_INFO, lua: SURFACE_MAIN_LUA });
+    const s = makeSession({ handle: dev.handle });
+    const applied: unknown[] = [];
+    s.setApply((id, k, v, o) => applied.push([id, k, v, o]));
+    await s.start(); // version matches v2 -> ready + provisioned, no upload
+
+    s.setSelectedActor(SNAP);
+    const out = s.getState().midiMonitor.filter((m) => m.dir === "out").map((m) => m.hex);
+    expect(out.some((h) => h.startsWith("f0 00 21 45 08 0d"))).toBe(true); // Execute-Lua ssp(...)
+
+    // Device encoder moves slot 1 (size) to full -> max 10.
+    dev.emit(frameElectraSysex([0x7f, 0x00, ...asciiBytes("scp vc 1 127")]));
+    await new Promise((r) => setTimeout(r));
+    expect(applied.at(-1)).toEqual(["a1", "size", 10, { history: false }]);
+  });
+
+  it("CLEARs when selection goes away", async () => {
+    const dev = makeDevice({ deviceInfo: GOOD_INFO, lua: SURFACE_MAIN_LUA });
+    const s = makeSession({ handle: dev.handle });
+    await s.start();
+    s.setSelectedActor(SNAP);
+    s.setSelectedActor(null);
+    const out = s.getState().midiMonitor.filter((m) => m.dir === "out").map((m) => m.hex);
+    // last Execute-Lua payload is ssp("C")
+    const execs = out.filter((h) => h.startsWith("f0 00 21 45 08 0d"));
+    const last = execs.at(-1) ?? "";
+    const body = last
+      .split(" ")
+      .slice(6, -1)
+      .map((b) => String.fromCharCode(parseInt(b, 16)))
+      .join("");
+    expect(body).toBe('ssp("C")');
   });
 });

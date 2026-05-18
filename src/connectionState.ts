@@ -21,6 +21,7 @@ import {
 } from "./webMidiService";
 import {
   buildDeviceInfoRequest,
+  buildExecuteLua,
   buildRequestLua,
   buildRequestPreset,
   buildSwitchPresetSlot,
@@ -38,11 +39,28 @@ import {
   parsePresetResponse
 } from "./electraSysex";
 import { SURFACE_MAIN_LUA, SURFACE_PRESET_JSON, SURFACE_PRESET_MARKER } from "./surfaceBundle";
+import type { PluginHostActorSnapshot } from "./contracts";
+import { decodeDeviceRaw, mapInspectorToSurface } from "./inspectorMapping";
+import {
+  clearCommand,
+  decodeDeviceLine,
+  setActorCommand,
+  setFieldValueCommand,
+  type SurfaceDescriptor
+} from "./sspCodec";
+
+export type SurfaceApplyFn = (
+  actorId: string,
+  key: string,
+  value: boolean | number | string,
+  options?: { history?: boolean }
+) => void;
 
 const DEVICE_INFO_TIMEOUT_MS = 2000;
 const RESPONSE_TIMEOUT_MS = 1500;
 const ACK_TIMEOUT_MS = 4000;
 const POST_SWITCH_SETTLE_MS = 250;
+const SURFACE_SUPPRESS_MS = 350;
 const LOG_CAP = 80;
 const MONITOR_CAP = 60;
 const PORT_KEY = "simularca:electra-one:port-override";
@@ -97,7 +115,7 @@ export class ElectraSession {
     device: null,
     onDeviceBundleVersion: null,
     buildBundleVersion: SURFACE_BUNDLE_VERSION,
-    targetSlot: { bank: 0, slot: 0 },
+    targetSlot: { bank: 2, slot: 0 },
     presetSlot: null,
     mirroredActor: null,
     lastError: null,
@@ -109,13 +127,20 @@ export class ElectraSession {
   private disposed = false;
   private starting = false;
 
+  // Surface (SSP) state.
+  private applyFn: SurfaceApplyFn | null = null;
+  private snapshot: PluginHostActorSnapshot | null = null;
+  private descriptor: SurfaceDescriptor | null = null;
+  private suppressUntil = 0;
+  private suppressKey: string | null = null;
+
   constructor(deps: SessionDeps = {}) {
     this.open = deps.open ?? openElectra;
     this.enumerate = deps.enumerate ?? enumerateMidiPorts;
     this.checkSupport = deps.checkSupport ?? webMidiSupported;
     this.storage = deps.storage === undefined ? defaultStorage() : deps.storage;
     this.state.portOverride = this.loadJson(PORT_KEY, { input: null, output: null });
-    this.state.targetSlot = this.loadJson(SLOT_KEY, { bank: 0, slot: 0 });
+    this.state.targetSlot = this.loadJson(SLOT_KEY, { bank: 2, slot: 0 });
   }
 
   getState(): ElectraConnectionState {
@@ -154,6 +179,9 @@ export class ElectraSession {
     this.state.summary = summary;
     this.log(phase === "error" || phase === "incompatible" ? "warn" : "info", summary);
     this.emit();
+    if (phase === "ready") {
+      this.pushSurface();
+    }
   }
 
   private loadJson<T>(key: string, fallback: T): T {
@@ -208,15 +236,95 @@ export class ElectraSession {
     }
   }
 
-  setMirroredActor(actor: { id: string; name: string } | null): void {
-    const current = this.state.mirroredActor;
-    if (current?.id === actor?.id && current?.name === actor?.name) {
+  /* -------------------------------------------------------- surface (SSP) */
+
+  /** The runtime component injects the host param-write path here. */
+  setApply(fn: SurfaceApplyFn | null): void {
+    this.applyFn = fn;
+  }
+
+  /** Called by the runtime whenever the editor selection / its params change. */
+  setSelectedActor(snapshot: PluginHostActorSnapshot | null): void {
+    this.snapshot = snapshot;
+    const mirror = snapshot ? { id: snapshot.id, name: snapshot.name } : null;
+    const cur = this.state.mirroredActor;
+    if (cur?.id !== mirror?.id || cur?.name !== mirror?.name) {
+      this.state.mirroredActor = mirror;
+      this.emit();
+    }
+    this.pushSurface();
+  }
+
+  private structureSig(d: SurfaceDescriptor): string {
+    return (
+      d.actorId +
+      "|" +
+      d.fields.map((f) => `${f.idx},${f.key},${f.kind},${f.label},${(f.options ?? []).join("/")}`).join(";")
+    );
+  }
+
+  private sendSsp(command: string): void {
+    try {
+      this.sendMonitored(buildExecuteLua(command));
+    } catch (error) {
+      this.log("error", `SSP send failed: ${String(error)}`);
+    }
+  }
+
+  /** Reconcile the device with the current selection (full SET_ACTOR on a
+   *  structure change, else per-field value pushes; CLEAR when nothing). */
+  private pushSurface(): void {
+    if (!this.handle || this.state.phase !== "ready" || !this.state.presetSlot) {
+      return; // not provisioned yet — will push again once ready
+    }
+    const next = mapInspectorToSurface(this.snapshot);
+    if (!next) {
+      if (this.descriptor) {
+        this.sendSsp(clearCommand());
+        this.descriptor = null;
+      }
       return;
     }
-    this.state.mirroredActor = actor;
-    // TODO Phase 3: build the SET_ACTOR descriptor via inspectorMapping and
-    // push it to the device over the Simularca Surface Protocol.
-    this.emit();
+    if (!this.descriptor || this.structureSig(this.descriptor) !== this.structureSig(next)) {
+      this.sendSsp(setActorCommand(next));
+      this.descriptor = next;
+      return;
+    }
+    for (let i = 0; i < next.fields.length; i += 1) {
+      const prev = this.descriptor.fields[i];
+      const cur = next.fields[i];
+      if (prev.value === cur.value) {
+        continue;
+      }
+      const echo =
+        this.suppressKey === cur.key && Date.now() < this.suppressUntil;
+      if (!echo) {
+        this.sendSsp(setFieldValueCommand(cur.idx, cur.value));
+      }
+      prev.value = cur.value;
+    }
+  }
+
+  private onDeviceValue(idx: number, raw: string): void {
+    if (!this.descriptor) {
+      return;
+    }
+    const field = this.descriptor.fields.find((f) => f.idx === idx);
+    if (!field) {
+      return;
+    }
+    const decoded = decodeDeviceRaw(field, Number(raw));
+    if (decoded === undefined) {
+      return;
+    }
+    // Loop prevention: the host re-render this triggers must not echo a
+    // SET_FIELD_VALUE straight back (SPEC §8.1).
+    this.suppressKey = field.key;
+    this.suppressUntil = Date.now() + SURFACE_SUPPRESS_MS;
+    this.log("info", `device edit: ${field.label} -> ${String(decoded)}`);
+    if (this.applyFn && this.snapshot) {
+      this.applyFn(this.snapshot.id, field.key, decoded, { history: false });
+    }
   }
 
   /* ----------------------------------------------------------- lifecycle */
@@ -269,7 +377,12 @@ export class ElectraSession {
         this.monitor("in", bytes);
         const logText = parseLog(bytes);
         if (logText) {
-          this.log("info", `device: ${logText}`);
+          const ev = decodeDeviceLine(logText);
+          if (ev && ev.type === "value") {
+            this.onDeviceValue(ev.idx, ev.value);
+          } else {
+            this.log("info", `device: ${logText}`);
+          }
         }
         this.emit();
       });

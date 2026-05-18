@@ -49,10 +49,20 @@ export function ElectraOneRuntime(props: PluginRuntimeComponentProps) {
     };
   }, []);
 
-  const first = props.host.selectedActors[0];
+  const host = props.host;
   useEffect(() => {
-    sharedSession?.setMirroredActor(first ? { id: first.id, name: first.name } : null);
-  }, [first?.id, first?.name]);
+    sharedSession?.setApply((actorId, key, value, opts) =>
+      host.updateActorParams(actorId, { [key]: value }, opts)
+    );
+  }, [host]);
+
+  const sel = props.host.selectedActors[0] ?? null;
+  // Signature covers params + schema so value/visibleWhen changes resync.
+  const sig = sel ? `${sel.id}|${sel.schema?.id ?? ""}|${JSON.stringify(sel.params)}` : "";
+  useEffect(() => {
+    sharedSession?.setSelectedActor(sel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sig]);
 
   return null;
 }

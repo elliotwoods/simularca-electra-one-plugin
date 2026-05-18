@@ -342,10 +342,15 @@ never overwrite. Long labels → device-side shortening. Firmware <
   preset + Lua upload with ACK/NACK; activate (visible); read-back +
   version-compare/skip; auto on ready + Re-provision. Still TODO: pin
   `MIN_FIRMWARE`; chunk very large preset uploads if the device needs it.
-- **Phase 3 — Baseline surface.** `Surface`, 8 custom slots; SSP
-  `SET_ACTOR`/`SET_FIELDS`/`SET_FIELD_VALUE`; toggle/select/read-only
-  renderers; `inspectorMapping` with `visibleWhen` + section labels;
-  bidirectional sync + loop prevention.
+- **Phase 3 — Baseline surface (done, on-device tuning pending).** 8-slot
+  preset; SSP over Execute-Lua (`setActor`/`setFieldValue`/`clear`) with terse
+  7-bit payloads + device→host `print()` lines; `inspectorMapping`
+  (visibleWhen, section labels, kind→slot, 8-cap) and `sspCodec` fully
+  unit-tested; ElectraSession pushes on selection/param change, applies device
+  edits via the host bridge with loop-suppression. Device-side encoder is a
+  0..127 fader scaled host-side (`decodeDeviceRaw`) — semantic on-device
+  editing is Phase 4. The Lua control API (formatter binding,
+  `valueObject:getControl`) is the on-device iteration point.
 - **Phase 4 — Numbers + digit editor.** Ranged/rangeless renderers; `digits`
   module; digit drill-down (zoom, carry/borrow, link lines). Vitest for digit
   math.
