@@ -1,0 +1,29 @@
+{
+  "name": "@simularca/electra-one-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "node ./scripts/plugin-build.mjs",
+    "watch": "node ./scripts/plugin-build.mjs --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "peerDependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@types/webmidi": "^2.0.10",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.8"
+  }
+}

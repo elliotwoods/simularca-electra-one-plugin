@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.log
+.simularca-plugin-build-info.json
+.rehearse-engine-plugin-build-info.json
+src/pluginBuildInfo.generated.ts
+.claude/settings.local.json
