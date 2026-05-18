@@ -104,6 +104,39 @@ export function parseDeviceInfoResponse(
   };
 }
 
+/**
+ * Build a "Set Preset Slot" message. Framing `00 21 45 14 08 bank slot` is
+ * taken as CONFIRMED (SPEC §10). This has a *visible* effect on the device
+ * (the active preset changes), so it is the most reliable end-to-end output
+ * test. `bank`/`slot` are sent as-is; their exact base (0- vs 1-indexed) is an
+ * open item to confirm against the Electra docs in Phase 2.
+ */
+export function buildSwitchPresetSlot(bank: number, slot: number): number[] {
+  return frameElectraSysex([...ELECTRA_CMD.SET_PRESET_SLOT, bank & 0x7f, slot & 0x7f]);
+}
+
+/** Format raw bytes as space-separated 2-digit hex (for the MIDI monitor). */
+export function bytesToHex(bytes: readonly number[]): string {
+  return bytes.map((b) => (b & 0xff).toString(16).padStart(2, "0")).join(" ");
+}
+
+/**
+ * Parse a hex string ("F0 00 21 45 … F7", separators/0x optional) to bytes.
+ * Throws on any non-hex token so the debug tool can show a clear error.
+ */
+export function hexToBytes(text: string): number[] {
+  const tokens = text
+    .replace(/0x/gi, " ")
+    .split(/[\s,]+/)
+    .filter((t) => t.length > 0);
+  return tokens.map((token) => {
+    if (!/^[0-9a-f]{1,2}$/i.test(token)) {
+      throw new Error(`Invalid hex byte: "${token}"`);
+    }
+    return Number.parseInt(token, 16);
+  });
+}
+
 /** Loose model check: Electra One Mini (and the larger Electra One, which is
  *  protocol-compatible for our purposes). Refined in Phase 2 against real
  *  device-info payloads. */

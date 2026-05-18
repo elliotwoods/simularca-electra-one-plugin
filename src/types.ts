@@ -23,12 +23,36 @@ export interface ElectraDeviceInfo {
   serial?: string;
 }
 
+export interface ElectraMidiMonitorEntry {
+  atIso: string;
+  dir: "in" | "out";
+  hex: string;
+}
+
+export interface ElectraPortLists {
+  inputs: string[];
+  outputs: string[];
+}
+
+export interface ElectraPortOverride {
+  input: string | null;
+  output: string | null;
+}
+
 export interface ElectraConnectionState {
   phase: ElectraConnectionPhase;
   /** Human-readable summary for the inspector status panel. */
   summary: string;
   midiInputPortName: string | null;
   midiOutputPortName: string | null;
+  /** All MIDI ports seen at last detection (for the manual picker). */
+  availablePorts: ElectraPortLists;
+  /** User-pinned exact port names (persisted), or nulls for auto. */
+  portOverride: ElectraPortOverride;
+  /** True once a device-info reply actually parsed (vs. timeout fallback). */
+  deviceInfoReceived: boolean;
+  /** Recent MIDI traffic (newest last) for the inspector monitor. */
+  midiMonitor: ElectraMidiMonitorEntry[];
   device: ElectraDeviceInfo | null;
   /** On-device surface bundle version parsed during provisioning (Phase 2). */
   onDeviceBundleVersion: number | null;
