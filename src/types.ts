@@ -80,9 +80,9 @@ export interface ElectraLogEntry {
  *  null disables the firmware gate until then. */
 export const MIN_FIRMWARE: string | null = null;
 
-/** Bumped whenever preset.json or any Lua module changes (SPEC §4.1). v2 =
- *  Phase 3: 8-slot surface + Simularca Surface Protocol. */
-export const SURFACE_BUNDLE_VERSION = 2;
+/** Bumped whenever preset.json or any Lua module changes (SPEC §4.1). v3 =
+ *  Phase 3: encoder-interactive slots (inputs/potId + value `function`). */
+export const SURFACE_BUNDLE_VERSION = 3;
 
 /** Preset name marker used for cheap discovery on the device (SPEC §4.2). */
 export const SURFACE_PRESET_MARKER = "Simularca Surface";

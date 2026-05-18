@@ -30,10 +30,14 @@ function buildControls(): Record<string, unknown>[] {
       pageId: 1,
       controlSetId: 1,
       visible: true,
+      // `inputs` binds the control to a physical encoder (potId 1..8); without
+      // it the control is graphics-only. The value `function` (NOT formatter)
+      // is the Lua callback that fires on encoder turn.
+      inputs: [{ potId: i + 1, valueId: "value" }],
       values: [
         {
           id: "value",
-          formatter: "slotFmt",
+          function: "slotChanged",
           message: { deviceId: 1, type: "cc7", parameterNumber: i + 1, min: 0, max: 127 }
         }
       ]
@@ -120,9 +124,10 @@ function ssp(cmd)
   end
 end
 
--- Bound to every control's value in the preset JSON: returns the display
--- string AND emits the physical change back to the host.
-function slotFmt(valueObject, value)
+-- Bound to every control's value via the preset JSON value "function":
+-- fires on encoder turn. Emits the change to the host and reflects it
+-- on screen immediately.
+function slotChanged(valueObject, value)
   local idx = 0
   local ok, ctrl = pcall(function()
     return valueObject:getControl()
@@ -133,10 +138,22 @@ function slotFmt(valueObject, value)
   print("scp vc " .. idx .. " " .. tostring(value))
   local s = slots[idx]
   if s ~= nil then
-    return s.label .. ": " .. tostring(value)
+    s.value = tostring(value)
+    redraw(idx)
   end
-  return tostring(value)
 end
+
+-- Encoder touch -> focus event (best-effort; guarded if the API differs).
+pcall(function()
+  if events ~= nil and events.subscribe ~= nil then
+    events.subscribe(POTS)
+    function events.onPotTouchChange(potId, controlId, touched)
+      if touched then
+        print("scp focus " .. (potId - 1))
+      end
+    end
+  end
+end)
 
 function preset.onReady()
   print("simularca:ready bundle=" .. BUNDLE_VERSION)
