@@ -356,11 +356,17 @@ never overwrite. Long labels → device-side shortening. Firmware <
   carry/borrow through the whole number, emergent sign, zoom clamp, growth) —
   14 exhaustive vitest cases. SSP gains `precision`, `scp dv` (direct digit
   value), `scp drill`/`scp drillx`. Device bundle v4: a DRILL page + Lua digit
-  editor mirroring digits.ts, entered by a **pot tap** (touch down→up, no turn
-  — the Electra Lua API has no encoder-push callback), bottom knobs = per-digit
-  nudge, top-left = zoom; any tap exits. Host applies `dv` clamped to range and
-  tracks `drillSlot`. The Lua custom-control paint / relative-encoder delta is
-  the on-device iteration point.
+  editor mirroring digits.ts. The Electra Lua API exposes **no encoder-push**
+  callback (push is firmware-owned, context-dependent by control type) and
+  `onPotTouchChange` is capacitive **touch only**. So: **touch = hover/preview**
+  (focuses the slot, `scp focus`, on-screen `>` marker — no action); the digit
+  editor is opened by a deliberate **"Edit" user-function** exposed in the
+  Preset Menu ([MENU]) and assignable to a hardware button/knob via device
+  Settings (firmware v4.1, one-time). Bottom knobs = per-digit nudge, top-left
+  = zoom. Host applies `dv` clamped to range and tracks `drillSlot`. Custom-
+  control paint uses the documented no-arg callback +
+  `graphics.print(x,y,text,width,align)`. Device-side paint/relative-encoder
+  remains the on-device tuning point.
 - **Phase 5 — Vectors + enums.** Vector renderer + per-channel digit editing;
   enum/select option-list drill-down with in-place `SET_FIELD_META` refresh.
 - **Phase 6 — Polish.** Section-aware page breaks; Back/Prev/Next; knob-touch

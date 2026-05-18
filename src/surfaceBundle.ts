@@ -98,15 +98,15 @@ export const SURFACE_PRESET_JSON = JSON.stringify(SURFACE_PRESET);
 
 // Must stay 7-bit ASCII (uploaded raw over SysEx; asciiBytes() throws otherwise).
 // The digit math mirrors src/digits.ts (which is exhaustively unit-tested).
-export const SURFACE_MAIN_LUA = `-- Simularca Surface - generated bundle (Phase 4)
+export const SURFACE_MAIN_LUA = `-- Simularca Surface - generated bundle (Phase 4, v${SURFACE_BUNDLE_VERSION})
 local BUNDLE_VERSION = ${SURFACE_BUNDLE_VERSION}
 local US = string.char(31)
 local RS = string.char(30)
 local WIN = 4
 local slots = {}
 local editing = nil
+local focusedIdx = nil
 local lastPot = {}
-local touchMoved = {}
 
 local function splitc(s, sep)
   local t = {}
@@ -172,25 +172,26 @@ local function clampRange(v, mn, mx)
   return v
 end
 
-local function drillPaint(control)
-  pcall(function()
-    graphics.setColor(0x000000)
-    graphics.fillRect(0, 0, 1024, 575)
-    if editing == nil then
-      return
-    end
-    local s = slots[editing.idx]
-    graphics.setColor(0x9fb4cf)
-    graphics.print(20, 20, (s ~= nil and s.label or "value"))
-    local fmt = "%." .. tostring(editing.prec) .. "f"
-    local txt = string.format(fmt, editing.value)
-    graphics.setColor(0xffffff)
-    graphics.print(40, 200, txt)
-    -- active window hint
+-- Paint callback for the full-window custom control. Per the Electra docs the
+-- callback takes no args; graphics.print needs (x,y,text,width,alignment).
+function drillPaint()
+  graphics.setColor(0x0a0f17)
+  graphics.fillRect(0, 0, 1024, 575)
+  if editing == nil then
     graphics.setColor(0x6f86a8)
-    local hint = "knob1=zoom  knobs5-8=digits  ws=10^" .. tostring(editing.ws) .. "  tap=exit"
-    graphics.print(20, 520, hint)
-  end)
+    graphics.print(0, 270, "no field", 1024, CENTER)
+    return
+  end
+  local s = slots[editing.idx]
+  graphics.setColor(0x9fb4cf)
+  graphics.print(0, 40, (s ~= nil and s.label or "value"), 1024, CENTER)
+  local fmt = "%." .. tostring(editing.prec) .. "f"
+  graphics.setColor(0xffffff)
+  graphics.print(0, 230, string.format(fmt, editing.value), 1024, CENTER)
+  graphics.setColor(0x6f86a8)
+  local hint = "knob1 = zoom    knobs 5-8 = digits    window = 10^" .. tostring(editing.ws)
+  graphics.print(0, 500, hint, 1024, CENTER)
+  graphics.print(0, 530, "Edit user-function / button to exit", 1024, CENTER)
 end
 
 local function emitDigit()
@@ -304,7 +305,6 @@ function slotChanged(valueObject, value)
   if ok and ctrl ~= nil then
     idx = ctrl:getId() - 1
   end
-  touchMoved[idx + 1] = true
   print("scp vc " .. idx .. " " .. tostring(value))
   local s = slots[idx]
   if s ~= nil then
@@ -322,7 +322,6 @@ function drillKnob(valueObject, value)
   if ok and ctrl ~= nil then
     pot = ctrl:getId() - 99
   end
-  touchMoved[pot] = true
   local prev = lastPot[pot] or value
   local delta = value - prev
   lastPot[pot] = value
@@ -336,39 +335,77 @@ function drillKnob(valueObject, value)
   end
 end
 
--- pot tap (touch down then up with no turn) toggles the digit editor.
+-- Touch is a HOVER/preview only (like a mouse-over): it focuses the slot and
+-- shows an indicator, but performs no action. The action is a deliberate
+-- press of the "Edit" user-function (Preset Menu, or assign it to a hardware
+-- button/knob in the device Settings) which acts on the focused slot.
+local function showHover(idx, on)
+  local c = controls.get(idx + 1)
+  local s = slots[idx]
+  if c == nil or s == nil then
+    return
+  end
+  if on then
+    c:setName("> " .. s.label .. ": " .. s.value)
+  else
+    c:setName(s.label .. ": " .. s.value)
+  end
+  c:repaint()
+end
+
 pcall(function()
   if events ~= nil and events.subscribe ~= nil then
     events.subscribe(POTS)
     function events.onPotTouchChange(potId, controlId, touched)
+      local idx = potId - 1
+      if slots[idx] == nil then
+        return
+      end
       if touched then
-        touchMoved[potId] = false
-        return
-      end
-      if touchMoved[potId] then
-        return
-      end
-      if editing ~= nil then
-        exitDigit()
+        focusedIdx = idx
+        print("scp focus " .. idx)
+        showHover(idx, true)
       else
-        local idx = potId - 1
-        if slots[idx] ~= nil and slots[idx].kind == "number" then
-          enterDigit(idx)
-        else
-          print("scp focus " .. idx)
-        end
+        showHover(idx, false)
       end
     end
   end
 end)
 
-function preset.onReady()
+-- Deliberate "press" action on the focused slot (opens/closes the digit
+-- editor). Exposed in the Preset Menu and assignable to a hardware button.
+function editFocused()
+  if editing ~= nil then
+    exitDigit()
+    return
+  end
+  if focusedIdx ~= nil and slots[focusedIdx] ~= nil and slots[focusedIdx].kind == "number" then
+    enterDigit(focusedIdx)
+  end
+end
+
+preset.userFunctions = {
+  pot1 = { call = editFocused, name = "Edit", close = true },
+  pot2 = { call = exitDigit, name = "Back", close = true }
+}
+
+local function registerDrillPaint()
   pcall(function()
     local c = controls.get(120)
     if c ~= nil then
       c:setPaintCallback(drillPaint)
     end
   end)
+end
+
+registerDrillPaint()
+
+function preset.onLoad()
+  registerDrillPaint()
+end
+
+function preset.onReady()
+  registerDrillPaint()
   print("simularca:ready bundle=" .. BUNDLE_VERSION)
 end
 

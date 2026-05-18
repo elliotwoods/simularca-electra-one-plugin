@@ -22,9 +22,12 @@ inspector fields are pushed to the 8 device slots and device encoder edits are
 applied back through the host bridge (with loop-suppression). The host/protocol
 side is fully unit-tested; the device-side Lua rendering + encoder feedback is
 a first cut to tune against hardware. Phase 4 adds the on-device **digit
-editor**: tap an encoder on a numeric slot to open a full-screen place-value
+editor**: **touch** a numeric slot's encoder to hover/focus it (preview only),
+then trigger the **"Edit"** user-function (Preset Menu, or assign it to a
+hardware button/knob in device Settings) to open a full-screen place-value
 editor (bottom knobs nudge digits with automatic carry/borrow, top-left zooms);
-the `digits` math is exhaustively unit-tested. Vectors/enums drill-downs and
+the `digits` math is exhaustively unit-tested. Encoder push is not exposed to
+Lua, hence the user-function trigger. Vectors/enums drill-downs and
 paging land in later phases — see `SPEC.md §11`.
 
 ## Install / build

@@ -82,9 +82,10 @@ export interface ElectraLogEntry {
  *  null disables the firmware gate until then. */
 export const MIN_FIRMWARE: string | null = null;
 
-/** Bumped whenever preset.json or any Lua module changes (SPEC §4.1). v4 =
- *  Phase 4: on-device digit editor (DRILL page) + pot-tap entry. */
-export const SURFACE_BUNDLE_VERSION = 4;
+/** Bumped whenever preset.json or any Lua module changes (SPEC §4.1). v5 =
+ *  Phase 4: touch=hover/focus; digit editor opened by an "Edit" user-function
+ *  (Preset Menu / assignable hardware button); fixed custom-control paint. */
+export const SURFACE_BUNDLE_VERSION = 5;
 
 /** Preset name marker used for cheap discovery on the device (SPEC §4.2). */
 export const SURFACE_PRESET_MARKER = "Simularca Surface";
