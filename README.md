@@ -15,20 +15,21 @@ the phased plan.
 ## Status
 
 Phases 1–3: Web MIDI detection + port picker, the connection state machine,
-the inspector status/diagnostics/debug panel, **provisioning** (uploads an
-8-slot surface preset + Lua app to a chosen, never-overwriting slot and
-activates it), and the **Simularca Surface Protocol** — the selected actor's
-inspector fields are pushed to the 8 device slots and device encoder edits are
-applied back through the host bridge (with loop-suppression). The host/protocol
-side is fully unit-tested; the device-side Lua rendering + encoder feedback is
-a first cut to tune against hardware. Phase 4 adds the on-device **digit
-editor**: **touch** a numeric slot's encoder to hover/focus it (preview only),
-then trigger the **"Edit"** user-function (Preset Menu, or assign it to a
-hardware button/knob in device Settings) to open a full-screen place-value
-editor (bottom knobs nudge digits with automatic carry/borrow, top-left zooms);
-the `digits` math is exhaustively unit-tested. Encoder push is not exposed to
-Lua, hence the user-function trigger. Vectors/enums drill-downs and
-paging land in later phases — see `SPEC.md §11`.
+the inspector status/diagnostics/debug panel, **provisioning** (uploads the
+surface preset + Lua app to a chosen, never-overwriting slot and activates
+it), and the **Simularca Surface Protocol** (bidirectional, loop-suppressed).
+
+The device is a **single split-row surface**: the **bottom row** (encoders
+5–8) shows up to 4 parameter **values**; **touch** a value to focus it
+(persists) and the **top row** (encoders 1–4) becomes its **detail editor** —
+for a number, the 4 place-value digits (carry/borrow), with the focused
+value's own bottom encoder panning the digit window (zoom); for a select, an
+option browser. A centre **custom-graphics** band shows the focused value as a
+large **7-segment** readout plus a **scrollbar**; **Prev/Next** user-functions
+(Preset Menu, or assign to a hardware button/knob in device Settings) page
+through actors with more than 4 fields. No separate DRILL page, no
+encoder-push needed. The host/protocol/`digits` math is fully unit-tested; the
+device-side Lua layout/7-seg scale is tuned on hardware. See `SPEC.md §11`.
 
 ## Install / build
 

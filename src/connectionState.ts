@@ -118,7 +118,7 @@ export class ElectraSession {
     targetSlot: { bank: 2, slot: 0 },
     presetSlot: null,
     mirroredActor: null,
-    drillSlot: null,
+    focusedSlot: null,
     lastError: null,
     log: []
   };
@@ -404,12 +404,9 @@ export class ElectraSession {
             this.onDeviceValue(ev.idx, ev.value);
           } else if (ev && ev.type === "dvalue") {
             this.onDeviceDirect(ev.idx, ev.value);
-          } else if (ev && ev.type === "drill") {
-            this.state.drillSlot = ev.idx;
-            this.log("info", `device: digit editor open on slot ${ev.idx}`);
-          } else if (ev && ev.type === "drillexit") {
-            this.state.drillSlot = null;
-            this.log("info", "device: digit editor closed");
+          } else if (ev && ev.type === "focus") {
+            this.state.focusedSlot = ev.idx;
+            this.log("info", `device: focused field ${ev.idx}`);
           } else {
             this.log("info", `device: ${logText}`);
           }

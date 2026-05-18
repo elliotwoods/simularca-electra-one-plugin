@@ -18,7 +18,7 @@ describe("surface bundle", () => {
     expect(preset.pages.length).toBeGreaterThan(0);
   });
 
-  it("page-1 slots are encoder-bound with the value function", () => {
+  it("is one page: 4 detail (pots 1-4) + 4 value (pots 5-8) faders + 1 custom", () => {
     const preset = JSON.parse(SURFACE_PRESET_JSON) as {
       pages: Array<{ id: number; name: string }>;
       controls: Array<{
@@ -26,30 +26,43 @@ describe("surface bundle", () => {
         type: string;
         pageId: number;
         controlSetId: number;
+        visible?: boolean;
         inputs?: Array<{ potId: number; valueId: string }>;
         values?: Array<{ function?: string }>;
       }>;
     };
-    const surface = preset.controls.filter((c) => c.pageId === 1);
-    expect(surface).toHaveLength(8);
-    surface.forEach((c, i) => {
-      expect(c.controlSetId).toBe(1);
-      expect(c.inputs?.[0]).toEqual({ potId: i + 1, valueId: "value" });
-      expect(c.values?.[0].function).toBe("slotChanged");
-    });
-    expect(SURFACE_MAIN_LUA).toContain("function slotChanged(");
+    expect(preset.pages).toHaveLength(1);
+    expect(preset.pages[0]).toMatchObject({ id: 1, name: "SURFACE" });
+    expect(preset.controls.every((c) => c.pageId === 1 && c.controlSetId === 1)).toBe(true);
+
+    const detail = preset.controls.filter((c) => c.values?.[0].function === "detailChanged");
+    const value = preset.controls.filter((c) => c.values?.[0].function === "valueChanged");
+    const custom = preset.controls.filter((c) => c.type === "custom");
+    expect(detail).toHaveLength(4);
+    expect(value).toHaveLength(4);
+    expect(custom).toHaveLength(1);
+
+    detail.forEach((c, i) => expect(c.inputs?.[0]).toEqual({ potId: i + 1, valueId: "value" }));
+    value.forEach((c, i) => expect(c.inputs?.[0]).toEqual({ potId: i + 5, valueId: "value" }));
+    expect(custom[0].inputs).toBeUndefined(); // not encoder-bound
   });
 
-  it("has a DRILL page with knob faders + a custom paint control", () => {
-    const preset = JSON.parse(SURFACE_PRESET_JSON) as {
-      pages: Array<{ id: number; name: string }>;
-      controls: Array<{ pageId: number; type: string }>;
-    };
-    expect(preset.pages.find((p) => p.id === 2)?.name).toBe("DRILL");
-    const drill = preset.controls.filter((c) => c.pageId === 2);
-    expect(drill.filter((c) => c.type === "fader")).toHaveLength(8);
-    expect(drill.some((c) => c.type === "custom")).toBe(true);
-    expect(SURFACE_MAIN_LUA).toContain("function drillKnob(");
-    expect(SURFACE_MAIN_LUA).toContain("scp drill ");
+  it("Lua has the split-row + paging + 7-seg functions, not the old DRILL ones", () => {
+    for (const fn of [
+      "function valueChanged(",
+      "function detailChanged(",
+      "function pagePrev(",
+      "function pageNext(",
+      "function draw7(",
+      "function paint(",
+      "preset.userFunctions"
+    ]) {
+      expect(SURFACE_MAIN_LUA).toContain(fn);
+    }
+    expect(SURFACE_MAIN_LUA).toContain('name = "Prev"');
+    expect(SURFACE_MAIN_LUA).toContain('name = "Next"');
+    expect(SURFACE_MAIN_LUA).not.toContain("pages.display");
+    expect(SURFACE_MAIN_LUA).not.toContain("function drillKnob(");
+    expect(SURFACE_MAIN_LUA).not.toContain("function slotChanged(");
   });
 });

@@ -64,8 +64,8 @@ export interface ElectraConnectionState {
   presetSlot: { bank: number; slot: number } | null;
   /** Id/name of the actor currently mirrored to the device, if any. */
   mirroredActor: { id: string; name: string } | null;
-  /** Slot index whose on-device digit editor is open, or null. */
-  drillSlot: number | null;
+  /** Absolute field index currently focused on the device, or null. */
+  focusedSlot: number | null;
   lastError: string | null;
   /** Rolling diagnostics for the inspector log group (newest last). */
   log: ElectraLogEntry[];
@@ -82,10 +82,10 @@ export interface ElectraLogEntry {
  *  null disables the firmware gate until then. */
 export const MIN_FIRMWARE: string | null = null;
 
-/** Bumped whenever preset.json or any Lua module changes (SPEC §4.1). v5 =
- *  Phase 4: touch=hover/focus; digit editor opened by an "Edit" user-function
- *  (Preset Menu / assignable hardware button); fixed custom-control paint. */
-export const SURFACE_BUNDLE_VERSION = 5;
+/** Bumped whenever preset.json or any Lua module changes (SPEC §4.1). v7 =
+ *  split-row: values bottom row, on-touch detail editor top row, 7-seg
+ *  custom-graphics readout, Prev/Next paging + scrollbar; no DRILL page. */
+export const SURFACE_BUNDLE_VERSION = 7;
 
 /** Preset name marker used for cheap discovery on the device (SPEC §4.2). */
 export const SURFACE_PRESET_MARKER = "Simularca Surface";

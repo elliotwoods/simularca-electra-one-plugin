@@ -362,11 +362,21 @@ never overwrite. Long labels → device-side shortening. Firmware <
   (focuses the slot, `scp focus`, on-screen `>` marker — no action); the digit
   editor is opened by a deliberate **"Edit" user-function** exposed in the
   Preset Menu ([MENU]) and assignable to a hardware button/knob via device
-  Settings (firmware v4.1, one-time). Bottom knobs = per-digit nudge, top-left
-  = zoom. Host applies `dv` clamped to range and tracks `drillSlot`. Custom-
-  control paint uses the documented no-arg callback +
-  `graphics.print(x,y,text,width,align)`. Device-side paint/relative-encoder
-  remains the on-device tuning point.
+  Settings (firmware v4.1, one-time). Host applies `dv` clamped to range.
+- **Phase 4.1 — Split-row redesign (current, bundle v7).** Replaces the DRILL
+  page entirely. One page: **values on the bottom row** (encoders 5–8, ≤4 at a
+  time), **on-touch detail editor on the top row** (encoders 1–4) — for a
+  number the 4 place-value digit knobs, with the focused value's own bottom
+  encoder panning the window (zoom); for a select an option browser. Touch =
+  focus (persists until another value is touched). A centre `type:"custom"`
+  control paints the focused value as a **7-segment** readout (Lua
+  `graphics.fillRect` segment renderer — works around the tiny system font)
+  plus a **scrollbar**; **Prev/Next** `preset.userFunctions` page through
+  >4 fields (host sends all visible fields, `MAX_FIELDS=64`; device pages 4 at
+  a time and reports **absolute** indices). No encoder-push, no DRILL page, no
+  "Edit" user-function. `digits.ts` math reused unchanged. Host tracks
+  `focusedSlot`. Device-side layout / 7-seg scale / fader-vs-custom
+  coexistence remain on-device tuning points.
 - **Phase 5 — Vectors + enums.** Vector renderer + per-channel digit editing;
   enum/select option-list drill-down with in-place `SET_FIELD_META` refresh.
 - **Phase 6 — Polish.** Section-aware page breaks; Back/Prev/Next; knob-touch

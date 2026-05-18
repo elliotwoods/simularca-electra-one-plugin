@@ -77,13 +77,14 @@ describe("mapInspectorToSurface", () => {
     expect(shown?.fields.find((f) => f.key === "adv")?.sectionLabel).toBe("Advanced");
   });
 
-  it("caps to maxSlots", () => {
+  it("sends all visible fields (device pages them); cap guards runaway", () => {
     const defs = Array.from({ length: 12 }, (_, i) => ({
       key: `n${i}`,
       label: `N${i}`,
       type: "boolean" as const
     }));
-    expect(mapInspectorToSurface(snap({}, defs))?.fields).toHaveLength(8);
+    // Default cap is large (MAX_FIELDS=64) — all 12 are sent, not truncated to 8.
+    expect(mapInspectorToSurface(snap({}, defs))?.fields).toHaveLength(12);
     expect(mapInspectorToSurface(snap({}, defs), 3)?.fields).toHaveLength(3);
   });
 });

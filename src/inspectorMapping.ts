@@ -1,8 +1,8 @@
 // Pure mapping: a selected actor (params + resolved schema, via the host
-// bridge) → an ordered list of device surface slots. SPEC §5.3/§5.4: flat
-// param list, evaluate `visibleWhen`, single-level section labels, first
-// `maxSlots` shown (paging is Phase 6). No device/React deps → fully unit
-// tested.
+// bridge) → an ordered list of device surface fields. Flat param list,
+// evaluate `visibleWhen`, single-level section labels. ALL visible fields are
+// sent (capped at `MAX_FIELDS`); the device pages through 4 at a time. No
+// device/React deps → fully unit tested.
 
 import type {
   ParameterDefinition,
@@ -11,7 +11,9 @@ import type {
 } from "./contracts";
 import type { SurfaceDescriptor, SurfaceField, SurfaceSlotKind } from "./sspCodec";
 
-export const MAX_SLOTS = 8;
+/** All visible fields are sent; the device pages 4 at a time. Cap guards a
+ *  runaway schema / SysEx payload size. */
+export const MAX_FIELDS = 64;
 
 function visible(def: ParameterDefinition, params: ParameterValues): boolean {
   if (!def.visibleWhen || def.visibleWhen.length === 0) {
@@ -91,7 +93,7 @@ function mapField(def: ParameterDefinition, params: ParameterValues): Mapped | n
  */
 export function mapInspectorToSurface(
   snapshot: PluginHostActorSnapshot | null,
-  maxSlots = MAX_SLOTS
+  maxSlots = MAX_FIELDS
 ): SurfaceDescriptor | null {
   if (!snapshot || !snapshot.schema) {
     return null;
