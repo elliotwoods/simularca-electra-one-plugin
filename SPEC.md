@@ -313,9 +313,15 @@ never overwrite. Long labels → device-side shortening. Firmware <
 
 - Exact USB-MIDI port name(s) of the Electra One Mini (currently matched by
   substring `electra`).
-- Exact SysEx framings: device-info request/response, Lua upload, Switch Preset
-  Slot, Run Lua Command, preset-name listing (preset upload `00 21 45 01 01`
-  and Set Preset Slot `00 21 45 14 08 bank slot` are taken as confirmed).
+- ~~Exact SysEx framings~~ **RESOLVED** from the Electra docs (electraSysex.ts):
+  device-info `02 7F` (resp `01 7F` JSON), Set Preset Slot `09 08 bank slot`
+  (0-based — the draft's `14 08` was wrong), upload preset `01 01`, upload Lua
+  `01 0C`, request Lua `02 0C`, request preset `02 01`, execute Lua `08 0D`,
+  ACK `7E 01` / NACK `7E 00` / Log `7F 00`. Note the protocol reuses the same
+  command bytes for upload and the matching response (direction is contextual).
+  Still open: per-slot preset-name *listing* (we use switch+request-preset
+  instead), exact bank/slot ranges for the Mini, max SysEx payload / chunking
+  threshold for large preset uploads.
 - Lua Extension API specifics (custom component paint/encoder/touch callbacks,
   page switching from Lua, font sizes, max SysEx payload, `sendSysex`).
 - Whether the 4 assignable buttons can be rebound per-context from Lua.
@@ -330,10 +336,12 @@ never overwrite. Long labels → device-side shortening. Firmware <
 - **Phase 1 — Plumbing (done).** Web MIDI detection, connection state machine,
   inspector status/diagnostics panel, always-on runtime watcher tracking the
   selected actor, the two host prerequisites.
-- **Phase 2 — Provisioning.** Slot discovery, preset-name listing,
-  `BUNDLE_VERSION` compare, preset + Lua upload, Switch Preset Slot,
-  `(bank,slot)` persistence, working Re-provision — minimal "hello"
-  preset/Lua. Pin `MIN_FIRMWARE`; confirm Electra SysEx framings.
+- **Phase 2 — Provisioning (done).** Corrected Electra SysEx framings;
+  minimal "hello" preset + Lua bundle (stamped `BUNDLE_VERSION`); safe target
+  slot (persisted) with a never-overwrite guard (request-preset name check);
+  preset + Lua upload with ACK/NACK; activate (visible); read-back +
+  version-compare/skip; auto on ready + Re-provision. Still TODO: pin
+  `MIN_FIRMWARE`; chunk very large preset uploads if the device needs it.
 - **Phase 3 — Baseline surface.** `Surface`, 8 custom slots; SSP
   `SET_ACTOR`/`SET_FIELDS`/`SET_FIELD_VALUE`; toggle/select/read-only
   renderers; `inspectorMapping` with `visibleWhen` + section labels;

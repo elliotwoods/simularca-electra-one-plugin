@@ -58,7 +58,9 @@ export interface ElectraConnectionState {
   onDeviceBundleVersion: number | null;
   /** Build-time surface bundle version this plugin ships. */
   buildBundleVersion: number;
-  /** Persisted/active preset location once provisioned (Phase 2). */
+  /** Where the surface will be / was provisioned (0-based, persisted). */
+  targetSlot: { bank: number; slot: number };
+  /** Active provisioned preset location once provisioned. */
   presetSlot: { bank: number; slot: number } | null;
   /** Id/name of the actor currently mirrored to the device, if any. */
   mirroredActor: { id: string; name: string } | null;

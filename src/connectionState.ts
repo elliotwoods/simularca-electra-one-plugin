@@ -21,18 +21,32 @@ import {
 } from "./webMidiService";
 import {
   buildDeviceInfoRequest,
+  buildRequestLua,
+  buildRequestPreset,
   buildSwitchPresetSlot,
+  buildUploadLua,
+  buildUploadPreset,
   bytesToHex,
   hexToBytes,
   isElectraSysex,
   isMiniCompatible,
-  parseDeviceInfoResponse
+  parseAck,
+  parseBundleVersion,
+  parseDeviceInfoResponse,
+  parseLog,
+  parseLuaResponse,
+  parsePresetResponse
 } from "./electraSysex";
+import { SURFACE_MAIN_LUA, SURFACE_PRESET_JSON, SURFACE_PRESET_MARKER } from "./surfaceBundle";
 
 const DEVICE_INFO_TIMEOUT_MS = 2000;
-const LOG_CAP = 60;
-const MONITOR_CAP = 40;
-const STORAGE_KEY = "simularca:electra-one:port-override";
+const RESPONSE_TIMEOUT_MS = 1500;
+const ACK_TIMEOUT_MS = 4000;
+const POST_SWITCH_SETTLE_MS = 250;
+const LOG_CAP = 80;
+const MONITOR_CAP = 60;
+const PORT_KEY = "simularca:electra-one:port-override";
+const SLOT_KEY = "simularca:electra-one:target-slot";
 
 export interface SessionDeps {
   open?: (opts: OpenOptions) => Promise<WebMidiHandle>;
@@ -50,8 +64,9 @@ function defaultStorage(): Pick<Storage, "getItem" | "setItem"> | null {
 }
 
 function compareFirmware(a: string, b: string): number {
-  const pa = a.split(".").map((n) => Number.parseInt(n, 10) || 0);
-  const pb = b.split(".").map((n) => Number.parseInt(n, 10) || 0);
+  const norm = (s: string) => s.replace(/^v/i, "");
+  const pa = norm(a).split(".").map((n) => Number.parseInt(n, 10) || 0);
+  const pb = norm(b).split(".").map((n) => Number.parseInt(n, 10) || 0);
   for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
     const d = (pa[i] ?? 0) - (pb[i] ?? 0);
     if (d !== 0) {
@@ -82,6 +97,7 @@ export class ElectraSession {
     device: null,
     onDeviceBundleVersion: null,
     buildBundleVersion: SURFACE_BUNDLE_VERSION,
+    targetSlot: { bank: 0, slot: 0 },
     presetSlot: null,
     mirroredActor: null,
     lastError: null,
@@ -98,7 +114,8 @@ export class ElectraSession {
     this.enumerate = deps.enumerate ?? enumerateMidiPorts;
     this.checkSupport = deps.checkSupport ?? webMidiSupported;
     this.storage = deps.storage === undefined ? defaultStorage() : deps.storage;
-    this.state.portOverride = this.loadOverride();
+    this.state.portOverride = this.loadJson(PORT_KEY, { input: null, output: null });
+    this.state.targetSlot = this.loadJson(SLOT_KEY, { bank: 0, slot: 0 });
   }
 
   getState(): ElectraConnectionState {
@@ -139,37 +156,45 @@ export class ElectraSession {
     this.emit();
   }
 
-  private loadOverride(): ElectraPortOverride {
+  private loadJson<T>(key: string, fallback: T): T {
     try {
-      const raw = this.storage?.getItem(STORAGE_KEY);
+      const raw = this.storage?.getItem(key);
       if (raw) {
-        const parsed = JSON.parse(raw) as Partial<ElectraPortOverride>;
-        return { input: parsed.input ?? null, output: parsed.output ?? null };
+        return { ...fallback, ...(JSON.parse(raw) as object) } as T;
       }
     } catch {
       /* ignore */
     }
-    return { input: null, output: null };
+    return fallback;
   }
 
-  private saveOverride(): void {
+  private saveJson(key: string, value: unknown): void {
     try {
-      this.storage?.setItem(STORAGE_KEY, JSON.stringify(this.state.portOverride));
+      this.storage?.setItem(key, JSON.stringify(value));
     } catch {
       /* ignore */
     }
   }
 
-  /** Pin (or clear with nulls) the exact MIDI port names, then reconnect. */
+  private wait(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   async setPortOverride(next: ElectraPortOverride): Promise<void> {
     this.state.portOverride = { input: next.input ?? null, output: next.output ?? null };
-    this.saveOverride();
-    this.log("info", `Port override set: in=${next.input ?? "auto"} out=${next.output ?? "auto"}`);
+    this.saveJson(PORT_KEY, this.state.portOverride);
+    this.log("info", `Port override: in=${next.input ?? "auto"} out=${next.output ?? "auto"}`);
     this.emit();
     await this.start();
   }
 
-  /** Enumerate ports without (re)connecting — for the inspector picker. */
+  setTargetSlot(bank: number, slot: number): void {
+    this.state.targetSlot = { bank: Math.max(0, bank | 0), slot: Math.max(0, slot | 0) };
+    this.saveJson(SLOT_KEY, this.state.targetSlot);
+    this.log("info", `Target slot set to bank ${this.state.targetSlot.bank} slot ${this.state.targetSlot.slot}.`);
+    this.emit();
+  }
+
   async refreshPorts(): Promise<void> {
     try {
       const list = await this.enumerate();
@@ -194,7 +219,8 @@ export class ElectraSession {
     this.emit();
   }
 
-  /** Begin (or restart) detection. Idempotent while in flight. */
+  /* ----------------------------------------------------------- lifecycle */
+
   async start(): Promise<void> {
     if (this.disposed || this.starting) {
       return;
@@ -222,7 +248,6 @@ export class ElectraSession {
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
         this.state.lastError = detail;
-        // Still surface what ports exist so the user can pick manually.
         await this.refreshPorts();
         this.set("unavailable", detail);
         return;
@@ -239,9 +264,13 @@ export class ElectraSession {
         outputs: handle.ports.outputs.map((p) => p.name)
       };
 
-      // Persistent inbound monitor.
+      // Persistent inbound monitor + device LOG/ACK surfacing.
       handle.onMessage((bytes) => {
         this.monitor("in", bytes);
+        const logText = parseLog(bytes);
+        if (logText) {
+          this.log("info", `device: ${logText}`);
+        }
         this.emit();
       });
       handle.onStateChange(() => {
@@ -252,49 +281,147 @@ export class ElectraSession {
       });
 
       this.set("checking-firmware", `Connected to ${handle.inputName}. Requesting device info…`);
-      const info = await this.awaitDeviceInfo(handle);
+      const info = await this.awaitResponse(
+        () => this.sendMonitored(buildDeviceInfoRequest()),
+        (m) => parseDeviceInfoResponse(m) !== null,
+        DEVICE_INFO_TIMEOUT_MS
+      );
       if (this.disposed) {
         return;
       }
-
-      if (!info) {
+      const parsed = info ? parseDeviceInfoResponse(info) : null;
+      if (!parsed) {
         this.log(
           "warn",
-          "No device-info reply within timeout. Likely the wrong USB port — pick the 'Electra Controller' port below."
+          "No device-info reply. Likely the wrong USB port — pick the 'Electra Controller' port below."
         );
         this.set(
           "ready",
-          "Electra connected but did NOT answer device info (probably the wrong port). Use the port picker / debug tools below."
+          "Electra connected but did NOT answer device info (probably the wrong port). Use the port picker."
         );
         return;
       }
-
-      this.state.device = info;
+      this.state.device = parsed;
       this.state.deviceInfoReceived = true;
-      if (!isMiniCompatible(info)) {
-        this.set("incompatible", `Unsupported device model "${info.model}".`);
+      if (!isMiniCompatible(parsed)) {
+        this.set("incompatible", `Unsupported device model "${parsed.model}".`);
         return;
       }
-      if (MIN_FIRMWARE && compareFirmware(info.firmware, MIN_FIRMWARE) < 0) {
-        this.set("incompatible", `Firmware ${info.firmware} is below the required ${MIN_FIRMWARE}.`);
+      if (MIN_FIRMWARE && compareFirmware(parsed.firmware, MIN_FIRMWARE) < 0) {
+        this.set("incompatible", `Firmware ${parsed.firmware} is below the required ${MIN_FIRMWARE}.`);
         return;
       }
 
-      // TODO Phase 2: slot discovery, BUNDLE_VERSION compare, preset + Lua
-      // upload, Switch Preset Slot, persistence → "provisioning" → "ready".
-      this.set(
-        "ready",
-        `Electra One ${info.model} (fw ${info.firmware}) talking. Provisioning lands in Phase 2 — use the debug tools to verify the link.`
-      );
+      await this.ensureProvisioned();
     } finally {
       this.starting = false;
     }
   }
 
-  /** Phase 2 entry point for the inspector "Re-provision" button. */
+  /** Skip upload when the target slot already runs our current bundle. */
+  private async ensureProvisioned(): Promise<void> {
+    const { bank, slot } = this.state.targetSlot;
+    this.set("provisioning", `Checking target slot (bank ${bank}, slot ${slot})…`);
+    this.sendMonitored(buildSwitchPresetSlot(bank, slot));
+    await this.wait(POST_SWITCH_SETTLE_MS);
+
+    const luaMsg = await this.awaitResponse(
+      () => this.sendMonitored(buildRequestLua()),
+      (m) => parseLuaResponse(m) !== null,
+      RESPONSE_TIMEOUT_MS
+    );
+    const onDevice = luaMsg ? parseBundleVersion(parseLuaResponse(luaMsg) ?? "") : null;
+    this.state.onDeviceBundleVersion = onDevice;
+
+    if (onDevice === SURFACE_BUNDLE_VERSION) {
+      this.state.presetSlot = { bank, slot };
+      this.set(
+        "ready",
+        `Surface already provisioned (v${onDevice}) at bank ${bank} slot ${slot}. Device is live.`
+      );
+      return;
+    }
+    await this.provision();
+  }
+
+  /**
+   * Upload preset + Lua to the target slot and activate it. Refuses to
+   * overwrite a non-Simularca preset (SPEC §4: never clobber a user preset).
+   */
+  async provision(): Promise<boolean> {
+    if (!this.handle) {
+      this.set("error", "Cannot provision: not connected.");
+      return false;
+    }
+    const { bank, slot } = this.state.targetSlot;
+    this.set("provisioning", `Inspecting bank ${bank} slot ${slot} before upload…`);
+    this.sendMonitored(buildSwitchPresetSlot(bank, slot));
+    await this.wait(POST_SWITCH_SETTLE_MS);
+
+    const presetMsg = await this.awaitResponse(
+      () => this.sendMonitored(buildRequestPreset()),
+      (m) => parsePresetResponse(m) !== null,
+      RESPONSE_TIMEOUT_MS
+    );
+    const existing = presetMsg ? parsePresetResponse(presetMsg) : null;
+    const existingName = existing && typeof existing.name === "string" ? existing.name : null;
+    if (existingName && existingName !== SURFACE_PRESET_MARKER) {
+      this.set(
+        "error",
+        `Bank ${bank} slot ${slot} holds "${existingName}". Refusing to overwrite a non-Simularca preset — pick another target slot in the inspector.`
+      );
+      return false;
+    }
+
+    this.set("provisioning", "Uploading preset…");
+    const presetAck = await this.awaitResponse(
+      () => this.sendMonitored(buildUploadPreset(SURFACE_PRESET_JSON)),
+      (m) => parseAck(m) !== null,
+      ACK_TIMEOUT_MS
+    );
+    if (!presetAck || parseAck(presetAck)?.ok !== true) {
+      this.set("error", presetAck ? "Device rejected the preset upload (NACK)." : "Preset upload timed out (no ACK).");
+      return false;
+    }
+
+    this.set("provisioning", "Uploading Lua app…");
+    const luaAck = await this.awaitResponse(
+      () => this.sendMonitored(buildUploadLua(SURFACE_MAIN_LUA)),
+      (m) => parseAck(m) !== null,
+      ACK_TIMEOUT_MS
+    );
+    if (!luaAck || parseAck(luaAck)?.ok !== true) {
+      this.set("error", luaAck ? "Device rejected the Lua upload (NACK)." : "Lua upload timed out (no ACK).");
+      return false;
+    }
+
+    // Activate — the device screen now shows the Simularca Surface preset.
+    this.sendMonitored(buildSwitchPresetSlot(bank, slot));
+    await this.wait(POST_SWITCH_SETTLE_MS);
+    this.state.presetSlot = { bank, slot };
+
+    const verifyMsg = await this.awaitResponse(
+      () => this.sendMonitored(buildRequestLua()),
+      (m) => parseLuaResponse(m) !== null,
+      RESPONSE_TIMEOUT_MS
+    );
+    const ver = verifyMsg ? parseBundleVersion(parseLuaResponse(verifyMsg) ?? "") : null;
+    this.state.onDeviceBundleVersion = ver;
+    this.set(
+      "ready",
+      `Provisioned to bank ${bank} slot ${slot}. Device shows "Simularca v${ver ?? "?"}".`
+    );
+    return true;
+  }
+
+  /** Inspector "Re-provision": force a fresh upload. */
   async reprovision(): Promise<void> {
     this.log("info", "Re-provision requested.");
-    await this.start();
+    if (!this.handle) {
+      await this.start();
+      return;
+    }
+    await this.provision();
   }
 
   /* -------------------------------------------------------- debug actions */
@@ -313,10 +440,13 @@ export class ElectraSession {
     this.emit();
   }
 
-  /** Debug: (re)send the device-info request and log the parsed reply. */
   async sendDeviceInfoRequest(): Promise<void> {
-    const handle = this.requireHandle();
-    const info = await this.awaitDeviceInfo(handle);
+    const msg = await this.awaitResponse(
+      () => this.sendMonitored(buildDeviceInfoRequest()),
+      (m) => parseDeviceInfoResponse(m) !== null,
+      DEVICE_INFO_TIMEOUT_MS
+    );
+    const info = msg ? parseDeviceInfoResponse(msg) : null;
     if (info) {
       this.state.device = info;
       this.state.deviceInfoReceived = true;
@@ -327,13 +457,11 @@ export class ElectraSession {
     this.emit();
   }
 
-  /** Debug: switch the active preset — a *visible* effect on the device. */
   switchPresetSlot(bank: number, slot: number): void {
     this.sendMonitored(buildSwitchPresetSlot(bank, slot));
-    this.log("info", `Sent Set Preset Slot bank=${bank} slot=${slot} (watch the device screen).`);
+    this.log("info", `Sent Set Preset Slot bank=${bank} slot=${slot} (0-based; watch the device).`);
   }
 
-  /** Debug: send an arbitrary SysEx/MIDI message from a hex string. */
   sendRawSysex(hex: string): void {
     const bytes = hexToBytes(hex);
     if (bytes.length === 0) {
@@ -350,12 +478,19 @@ export class ElectraSession {
 
   /* ----------------------------------------------------------- internals */
 
-  private awaitDeviceInfo(
-    handle: WebMidiHandle
-  ): Promise<ReturnType<typeof parseDeviceInfoResponse>> {
+  private awaitResponse(
+    send: () => void,
+    match: (message: number[]) => boolean,
+    timeoutMs: number
+  ): Promise<number[] | null> {
     return new Promise((resolve) => {
+      const handle = this.handle;
+      if (!handle) {
+        resolve(null);
+        return;
+      }
       let settled = false;
-      const finish = (value: ReturnType<typeof parseDeviceInfoResponse>) => {
+      const finish = (value: number[] | null) => {
         if (settled) {
           return;
         }
@@ -365,21 +500,15 @@ export class ElectraSession {
         resolve(value);
       };
       const unsubscribe = handle.onMessage((bytes) => {
-        if (!isElectraSysex(bytes)) {
-          return;
-        }
-        const parsed = parseDeviceInfoResponse(bytes);
-        if (parsed) {
-          finish(parsed);
+        if (isElectraSysex(bytes) && match(bytes)) {
+          finish(bytes);
         }
       });
-      const timer = setTimeout(() => finish(null), DEVICE_INFO_TIMEOUT_MS);
+      const timer = setTimeout(() => finish(null), timeoutMs);
       try {
-        const request = buildDeviceInfoRequest();
-        handle.send(request);
-        this.monitor("out", request);
+        send();
       } catch (error) {
-        this.log("error", `Failed to send device-info request: ${String(error)}`);
+        this.log("error", `Send failed: ${String(error)}`);
         finish(null);
       }
     });

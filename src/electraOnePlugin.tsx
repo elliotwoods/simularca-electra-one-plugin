@@ -126,10 +126,45 @@ function PortPicker(props: { session: ElectraSession; state: ElectraConnectionSt
   );
 }
 
+function ProvisioningCard(props: { session: ElectraSession; state: ElectraConnectionState }) {
+  const { session, state } = props;
+  return (
+    <div style={cardStyle}>
+      <strong style={{ opacity: 0.8 }}>Provisioning (target slot)</strong>
+      <div style={{ opacity: 0.65, fontSize: 12, margin: "4px 0 8px" }}>
+        The surface preset + Lua app are uploaded here, then activated (the
+        device screen switches to it). 0-based. A non-Simularca preset in this
+        slot is never overwritten — pick an empty/own slot.
+      </div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <span>bank</span>
+        <input
+          type="number"
+          min={0}
+          value={state.targetSlot.bank}
+          style={{ width: 52 }}
+          onChange={(e) => session.setTargetSlot(Number(e.target.value), state.targetSlot.slot)}
+        />
+        <span>slot</span>
+        <input
+          type="number"
+          min={0}
+          value={state.targetSlot.slot}
+          style={{ width: 52 }}
+          onChange={(e) => session.setTargetSlot(state.targetSlot.bank, Number(e.target.value))}
+        />
+        <button type="button" onClick={() => void session.provision()}>
+          Provision now
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function DebugTools(props: { session: ElectraSession; state: ElectraConnectionState }) {
   const { session, state } = props;
-  const [bank, setBank] = useState(1);
-  const [slot, setSlot] = useState(1);
+  const [bank, setBank] = useState(0);
+  const [slot, setSlot] = useState(0);
   const [hex, setHex] = useState("F0 00 21 45 02 7F F7");
   const [error, setError] = useState<string | null>(null);
 
@@ -158,7 +193,7 @@ function DebugTools(props: { session: ElectraSession; state: ElectraConnectionSt
         <input
           type="number"
           value={bank}
-          min={1}
+          min={0}
           style={{ width: 52 }}
           onChange={(e) => setBank(Number(e.target.value))}
         />
@@ -166,12 +201,12 @@ function DebugTools(props: { session: ElectraSession; state: ElectraConnectionSt
         <input
           type="number"
           value={slot}
-          min={1}
+          min={0}
           style={{ width: 52 }}
           onChange={(e) => setSlot(Number(e.target.value))}
         />
         <button type="button" onClick={() => guard(() => session.switchPresetSlot(bank, slot))}>
-          Switch preset slot
+          Switch preset slot (0-based)
         </button>
       </div>
       <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
@@ -262,6 +297,7 @@ export function ElectraOneInspector(props: PluginInspectorComponentProps) {
       </div>
 
       <PortPicker session={session} state={state} />
+      <ProvisioningCard session={session} state={state} />
 
       <div style={cardStyle}>
         <Row label="Phase" value={state.phase} tone={PHASE_TONE[state.phase]} />
@@ -277,6 +313,17 @@ export function ElectraOneInspector(props: PluginInspectorComponentProps) {
         <Row
           label="Bundle (device / build)"
           value={`${state.onDeviceBundleVersion ?? "—"} / ${state.buildBundleVersion}`}
+          tone={
+            state.onDeviceBundleVersion === state.buildBundleVersion ? "default" : "warning"
+          }
+        />
+        <Row
+          label="Provisioned slot"
+          value={
+            state.presetSlot
+              ? `bank ${state.presetSlot.bank}, slot ${state.presetSlot.slot}`
+              : "—"
+          }
         />
         <Row
           label="Mirrored actor"

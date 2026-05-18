@@ -1,47 +1,74 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ElectraSession, type SessionDeps } from "../src/connectionState";
-import { frameElectraSysex } from "../src/electraSysex";
+import {
+  asciiBytes,
+  electraMessageKind,
+  electraPayload,
+  frameElectraSysex
+} from "../src/electraSysex";
+import { SURFACE_BUNDLE_VERSION, SURFACE_MAIN_LUA } from "../src/surfaceBundle";
 import type { WebMidiHandle } from "../src/webMidiService";
 
-function deviceInfoReply(obj: unknown): number[] {
-  return frameElectraSysex(Array.from(JSON.stringify(obj), (c) => c.charCodeAt(0)));
+interface DeviceOpts {
+  deviceInfo?: Record<string, unknown> | null;
+  lua?: string | null; // null => no request-lua reply
+  preset?: Record<string, unknown> | "empty" | null;
+  ack?: boolean;
 }
 
-interface FakeOpts {
-  reply?: unknown | null;
-  inputName?: string;
-}
-
-function makeFakeHandle(opts: FakeOpts): WebMidiHandle {
-  const messageListeners = new Set<(b: number[]) => void>();
-  return {
-    inputName: opts.inputName ?? "Electra Controller",
+function makeDevice(opts: DeviceOpts) {
+  let storedLua = opts.lua ?? null;
+  const sent: string[] = [];
+  const listeners = new Set<(b: number[]) => void>();
+  const deliver = (bytes: number[]) =>
+    queueMicrotask(() => {
+      for (const l of [...listeners]) {
+        l(bytes);
+      }
+    });
+  const handle: WebMidiHandle = {
+    inputName: "Electra Controller",
     outputName: "Electra Controller",
     ports: {
       inputs: [{ id: "i", name: "Electra Controller" }],
       outputs: [{ id: "o", name: "Electra Controller" }]
     },
-    send() {
-      if (opts.reply != null) {
-        const bytes = deviceInfoReply(opts.reply);
-        queueMicrotask(() => {
-          for (const l of messageListeners) {
-            l(bytes);
-          }
-        });
+    send(bytes) {
+      const kind = electraMessageKind(bytes);
+      sent.push(kind);
+      if (kind === "REQUEST_DEVICE_INFO" && opts.deviceInfo != null) {
+        deliver(frameElectraSysex([0x01, 0x7f, ...asciiBytes(JSON.stringify(opts.deviceInfo))]));
+      } else if (kind === "REQUEST_LUA" && storedLua !== null) {
+        deliver(frameElectraSysex([0x01, 0x0c, ...asciiBytes(storedLua)]));
+      } else if (kind === "REQUEST_PRESET") {
+        if (opts.preset === "empty") {
+          deliver(frameElectraSysex([0x01, 0x01]));
+        } else if (opts.preset && typeof opts.preset === "object") {
+          deliver(frameElectraSysex([0x01, 0x01, ...asciiBytes(JSON.stringify(opts.preset))]));
+        }
+      } else if (kind === "UPLOAD_PRESET") {
+        if (opts.ack !== false) {
+          deliver(frameElectraSysex([0x7e, 0x01, 0, 0]));
+        }
+      } else if (kind === "UPLOAD_LUA") {
+        storedLua = String.fromCharCode(...electraPayload(bytes).slice(2));
+        if (opts.ack !== false) {
+          deliver(frameElectraSysex([0x7e, 0x01, 0, 0]));
+        }
       }
     },
-    onMessage(listener) {
-      messageListeners.add(listener);
-      return () => messageListeners.delete(listener);
+    onMessage(l) {
+      listeners.add(l);
+      return () => listeners.delete(l);
     },
     onStateChange() {
       return () => undefined;
     },
     close() {
-      messageListeners.clear();
+      listeners.clear();
     }
   };
+  return { handle, sentKinds: () => sent };
 }
 
 function fakeStorage() {
@@ -57,82 +84,122 @@ function makeSession(over: Partial<SessionDeps> & { handle?: WebMidiHandle }) {
   const deps: SessionDeps = {
     checkSupport: () => ({ available: true }),
     enumerate: async () => ({ inputs: [], outputs: [] }),
-    open: async () => over.handle ?? makeFakeHandle({ reply: null }),
+    open: async () => over.handle ?? makeDevice({ deviceInfo: null }).handle,
     storage: over.storage ?? fakeStorage(),
     ...over
   };
   return new ElectraSession(deps);
 }
 
+const GOOD_INFO = { model: "Electra One mini", versionText: "v4.1.4" };
+
 afterEach(() => {
   vi.useRealTimers();
 });
 
-describe("ElectraSession", () => {
-  it("reports unavailable when Web MIDI is unsupported", async () => {
-    const session = makeSession({
-      checkSupport: () => ({ available: false, reason: "no web midi" })
-    });
-    await session.start();
-    expect(session.getState().phase).toBe("unavailable");
-    expect(session.getState().summary).toBe("no web midi");
+describe("ElectraSession lifecycle", () => {
+  it("unavailable when Web MIDI unsupported", async () => {
+    const s = makeSession({ checkSupport: () => ({ available: false, reason: "no web midi" }) });
+    await s.start();
+    expect(s.getState().phase).toBe("unavailable");
   });
 
-  it("reaches ready with parsed device info", async () => {
-    const session = makeSession({
-      handle: makeFakeHandle({ reply: { hwId: "electra-one-mini", versionText: "4.1.2" } })
-    });
-    await session.start();
-    const s = session.getState();
-    expect(s.phase).toBe("ready");
-    expect(s.deviceInfoReceived).toBe(true);
-    expect(s.device?.model).toBe("electra-one-mini");
-    expect(s.midiInputPortName).toBe("Electra Controller");
-    expect(s.midiMonitor.some((m) => m.dir === "out")).toBe(true);
-    expect(s.midiMonitor.some((m) => m.dir === "in")).toBe(true);
-  });
-
-  it("reaches ready-but-no-reply on the wrong port (timeout)", async () => {
+  it("ready-but-no-reply on the wrong port (device-info timeout)", async () => {
     vi.useFakeTimers();
-    const session = makeSession({ handle: makeFakeHandle({ reply: null }) });
-    const p = session.start();
+    const { handle } = makeDevice({ deviceInfo: null });
+    const s = makeSession({ handle });
+    const p = s.start();
     await vi.advanceTimersByTimeAsync(2100);
     await p;
-    const s = session.getState();
-    expect(s.phase).toBe("ready");
-    expect(s.deviceInfoReceived).toBe(false);
-    expect(s.summary).toMatch(/wrong port/i);
+    expect(s.getState().phase).toBe("ready");
+    expect(s.getState().deviceInfoReceived).toBe(false);
+    expect(s.getState().summary).toMatch(/wrong port/i);
   });
 
-  it("is incompatible for an unsupported model", async () => {
-    const session = makeSession({
-      handle: makeFakeHandle({ reply: { model: "Launchpad", versionText: "1.0" } })
+  it("incompatible for an unsupported model (before provisioning)", async () => {
+    const { handle, sentKinds } = makeDevice({
+      deviceInfo: { model: "Launchpad", versionText: "1.0" }
     });
-    await session.start();
-    expect(session.getState().phase).toBe("incompatible");
+    const s = makeSession({ handle });
+    await s.start();
+    expect(s.getState().phase).toBe("incompatible");
+    expect(sentKinds()).not.toContain("UPLOAD_PRESET");
+  });
+});
+
+describe("provisioning", () => {
+  it("skips upload when the bundle version already matches", async () => {
+    const { handle, sentKinds } = makeDevice({ deviceInfo: GOOD_INFO, lua: SURFACE_MAIN_LUA });
+    const s = makeSession({ handle });
+    await s.start();
+    const st = s.getState();
+    expect(st.phase).toBe("ready");
+    expect(st.onDeviceBundleVersion).toBe(SURFACE_BUNDLE_VERSION);
+    expect(st.presetSlot).toEqual({ bank: 0, slot: 0 });
+    expect(sentKinds()).not.toContain("UPLOAD_PRESET");
   });
 
-  it("persists and reloads the port override", async () => {
+  it("uploads + activates when the slot is empty", async () => {
+    const { handle, sentKinds } = makeDevice({
+      deviceInfo: GOOD_INFO,
+      lua: "",
+      preset: "empty",
+      ack: true
+    });
+    const s = makeSession({ handle });
+    await s.start();
+    const st = s.getState();
+    expect(st.phase).toBe("ready");
+    expect(sentKinds()).toContain("UPLOAD_PRESET");
+    expect(sentKinds()).toContain("UPLOAD_LUA");
+    expect(st.onDeviceBundleVersion).toBe(SURFACE_BUNDLE_VERSION);
+    expect(st.presetSlot).toEqual({ bank: 0, slot: 0 });
+  });
+
+  it("refuses to overwrite a non-Simularca preset", async () => {
+    const { handle, sentKinds } = makeDevice({
+      deviceInfo: GOOD_INFO,
+      lua: "",
+      preset: { name: "User Synth" }
+    });
+    const s = makeSession({ handle });
+    await s.start();
+    expect(s.getState().phase).toBe("error");
+    expect(s.getState().summary).toMatch(/refusing to overwrite/i);
+    expect(sentKinds()).not.toContain("UPLOAD_PRESET");
+  });
+
+  it("errors when an upload is not ACKed", async () => {
+    const { handle } = makeDevice({
+      deviceInfo: GOOD_INFO,
+      lua: "",
+      preset: "empty",
+      ack: false
+    });
+    const s = makeSession({ handle });
+    await s.start();
+    expect(s.getState().phase).toBe("error");
+    expect(s.getState().summary).toMatch(/timed out|NACK/i);
+  }, 15000);
+});
+
+describe("controls + persistence", () => {
+  it("persists and reloads port override + target slot", async () => {
     const storage = fakeStorage();
-    const a = makeSession({ storage, handle: makeFakeHandle({ reply: { model: "Electra One" } }) });
-    await a.setPortOverride({ input: "Electra Controller", output: "Electra Port 2" });
-    expect(JSON.parse(storage.store.get("simularca:electra-one:port-override") as string)).toEqual({
-      input: "Electra Controller",
-      output: "Electra Port 2"
-    });
+    const a = makeSession({ storage, handle: makeDevice({ deviceInfo: GOOD_INFO, lua: SURFACE_MAIN_LUA }).handle });
+    a.setTargetSlot(2, 5);
+    await a.setPortOverride({ input: "Electra Controller", output: "Electra Controller" });
     const b = makeSession({ storage });
-    expect(b.getState().portOverride).toEqual({
-      input: "Electra Controller",
-      output: "Electra Port 2"
-    });
+    expect(b.getState().targetSlot).toEqual({ bank: 2, slot: 5 });
+    expect(b.getState().portOverride.input).toBe("Electra Controller");
   });
 
-  it("switchPresetSlot throws before connect, sends after", async () => {
-    const session = makeSession({ handle: makeFakeHandle({ reply: { model: "Electra One" } }) });
-    expect(() => session.switchPresetSlot(1, 1)).toThrow(/Not connected/);
-    await session.start();
-    session.switchPresetSlot(2, 3);
-    const out = session.getState().midiMonitor.filter((m) => m.dir === "out");
-    expect(out.at(-1)?.hex).toBe("f0 00 21 45 14 08 02 03 f7");
+  it("switchPresetSlot throws before connect, sends 09 08 after", async () => {
+    const s = makeSession({ handle: makeDevice({ deviceInfo: GOOD_INFO, lua: SURFACE_MAIN_LUA }).handle });
+    expect(() => s.switchPresetSlot(1, 1)).toThrow(/Not connected/);
+    await s.start();
+    s.switchPresetSlot(2, 3);
+    const out = s.getState().midiMonitor.filter((m) => m.dir === "out");
+    expect(out.at(-1)?.hex).toBe("f0 00 21 45 09 08 02 03 f7");
   });
 });

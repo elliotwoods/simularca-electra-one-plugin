@@ -1,39 +1,51 @@
 // Electra One native SysEx helpers (management plane). Manufacturer ID is
-// `00 21 45`. Framings marked CONFIRMED come from SPEC §10 / the Electra docs;
-// those marked UNCONFIRMED are best-effort and must be validated against
-// https://docs.electra.one/developers/midiimplementation.html during Phase 2.
+// `00 21 45`. All framings here are CONFIRMED against the Electra docs
+// (docs.electra.one/developers/midiimplementation.html) — see SPEC §10.
 
 import type { ElectraDeviceInfo } from "./types";
 
 export const SYSEX_START = 0xf0;
 export const SYSEX_END = 0xf7;
-/** Electra One manufacturer / system-exclusive ID. */
 export const ELECTRA_MANUFACTURER = [0x00, 0x21, 0x45] as const;
 
-/** Electra SysEx command bytes (subset). CONFIRMED ones per SPEC §10. */
+/** Command + object byte pairs (the two bytes after the manufacturer id). */
 export const ELECTRA_CMD = {
-  // UNCONFIRMED: device-info / version request. Electra replies with a JSON
-  // payload describing the model + firmware. Validate the request bytes
-  // against the MIDI implementation doc in Phase 2.
-  REQUEST_DEVICE_INFO: [0x02, 0x7f] as const,
-  // CONFIRMED (SPEC §10): preset upload prefix `00 21 45 01 01 …`.
-  UPLOAD_PRESET: [0x01, 0x01] as const,
-  // CONFIRMED (SPEC §10): Set Preset Slot `00 21 45 14 08 bank slot`.
-  SET_PRESET_SLOT: [0x14, 0x08] as const
-  // TODO Phase 2: Lua main-script upload, Switch Preset Slot, Run Lua Command,
-  // preset-name listing, Get Lua script — fill from the Electra docs.
+  REQUEST_DEVICE_INFO: [0x02, 0x7f],
+  DEVICE_INFO_RESPONSE: [0x01, 0x7f],
+  UPLOAD_PRESET: [0x01, 0x01],
+  REQUEST_PRESET: [0x02, 0x01],
+  PRESET_RESPONSE: [0x01, 0x01],
+  UPLOAD_LUA: [0x01, 0x0c],
+  REQUEST_LUA: [0x02, 0x0c],
+  LUA_RESPONSE: [0x01, 0x0c],
+  EXECUTE_LUA: [0x08, 0x0d],
+  SET_PRESET_SLOT: [0x09, 0x08], // 0-based bank + slot
+  ACK: [0x7e, 0x01],
+  NACK: [0x7e, 0x00],
+  LOG: [0x7f, 0x00]
 } as const;
 
 function hexTriplet(bytes: readonly number[]): string {
   return bytes.map((b) => b.toString(16).padStart(2, "0")).join(" ");
 }
 
-/** Frame a payload as a complete Electra SysEx message. */
+/** 7-bit ASCII encode (preset JSON / Lua source must stay in 7-bit range). */
+export function asciiBytes(text: string): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i);
+    if (code > 0x7f) {
+      throw new Error(`Non-ASCII byte (0x${code.toString(16)}) at index ${i}; payload must be 7-bit.`);
+    }
+    out.push(code);
+  }
+  return out;
+}
+
 export function frameElectraSysex(payload: readonly number[]): number[] {
   return [SYSEX_START, ...ELECTRA_MANUFACTURER, ...payload, SYSEX_END];
 }
 
-/** True when a raw inbound MIDI message is an Electra SysEx frame. */
 export function isElectraSysex(message: readonly number[]): boolean {
   return (
     message.length >= 5 &&
@@ -45,12 +57,7 @@ export function isElectraSysex(message: readonly number[]): boolean {
   );
 }
 
-/** Build the device-info / version request message. */
-export function buildDeviceInfoRequest(): number[] {
-  return frameElectraSysex([...ELECTRA_CMD.REQUEST_DEVICE_INFO]);
-}
-
-/** Extract the inner payload bytes (between manufacturer id and 0xF7). */
+/** Inner payload bytes (between the manufacturer id and 0xF7). */
 export function electraPayload(message: readonly number[]): number[] {
   if (!isElectraSysex(message)) {
     return [];
@@ -58,12 +65,63 @@ export function electraPayload(message: readonly number[]): number[] {
   return [...message.slice(4, message.length - 1)];
 }
 
-/**
- * Parse a device-info response. Electra returns a JSON object; depending on
- * firmware the JSON may start after a command byte or two. We scan the payload
- * for the first `{` and JSON-parse from there, which is tolerant of the
- * (UNCONFIRMED) exact response framing.
- */
+/** Classify an inbound Electra message by its command+object bytes. */
+export function electraMessageKind(
+  message: readonly number[]
+): keyof typeof ELECTRA_CMD | "unknown" {
+  const p = electraPayload(message);
+  if (p.length < 2) {
+    return "unknown";
+  }
+  for (const [name, [c, o]] of Object.entries(ELECTRA_CMD)) {
+    if (p[0] === c && p[1] === o) {
+      return name as keyof typeof ELECTRA_CMD;
+    }
+  }
+  return "unknown";
+}
+
+/* --------------------------------------------------------------- builders */
+
+export function buildDeviceInfoRequest(): number[] {
+  return frameElectraSysex([...ELECTRA_CMD.REQUEST_DEVICE_INFO]);
+}
+
+/** Switch the active preset. `bank`/`slot` are 0-based (CONFIRMED). */
+export function buildSwitchPresetSlot(bank: number, slot: number): number[] {
+  return frameElectraSysex([...ELECTRA_CMD.SET_PRESET_SLOT, bank & 0x7f, slot & 0x7f]);
+}
+
+export function buildUploadPreset(presetJson: string): number[] {
+  return frameElectraSysex([...ELECTRA_CMD.UPLOAD_PRESET, ...asciiBytes(presetJson)]);
+}
+
+export function buildUploadLua(luaSource: string): number[] {
+  return frameElectraSysex([...ELECTRA_CMD.UPLOAD_LUA, ...asciiBytes(luaSource)]);
+}
+
+export function buildRequestPreset(): number[] {
+  return frameElectraSysex([...ELECTRA_CMD.REQUEST_PRESET]);
+}
+
+export function buildRequestLua(): number[] {
+  return frameElectraSysex([...ELECTRA_CMD.REQUEST_LUA]);
+}
+
+export function buildExecuteLua(luaCommand: string): number[] {
+  return frameElectraSysex([...ELECTRA_CMD.EXECUTE_LUA, ...asciiBytes(luaCommand)]);
+}
+
+/* ---------------------------------------------------------------- parsers */
+
+function payloadTextAfterCmd(message: readonly number[]): string {
+  const p = electraPayload(message);
+  if (p.length <= 2) {
+    return "";
+  }
+  return String.fromCharCode(...p.slice(2));
+}
+
 export function parseDeviceInfoResponse(
   message: readonly number[]
 ): ElectraDeviceInfo | null {
@@ -75,55 +133,88 @@ export function parseDeviceInfoResponse(
   if (braceIndex === -1) {
     return null;
   }
-  let text: string;
-  try {
-    text = String.fromCharCode(...payload.slice(braceIndex));
-  } catch {
-    return null;
-  }
   let json: Record<string, unknown>;
   try {
-    json = JSON.parse(text) as Record<string, unknown>;
+    json = JSON.parse(String.fromCharCode(...payload.slice(braceIndex))) as Record<string, unknown>;
   } catch {
     return null;
   }
-  const versionText = (() => {
-    const v = json.versionText ?? json.firmware ?? json.version;
-    return typeof v === "string" ? v : String(v ?? "");
-  })();
-  const model = (() => {
-    const m = json.hwId ?? json.model ?? json.name;
-    return typeof m === "string" ? m : String(m ?? "unknown");
-  })();
-  const serial = typeof json.serial === "string" ? json.serial : undefined;
+  const str = (v: unknown, fallback = ""): string =>
+    typeof v === "string" ? v : v == null ? fallback : String(v);
   return {
     manufacturerId: hexTriplet(ELECTRA_MANUFACTURER),
-    model,
-    firmware: versionText || "unknown",
-    serial
+    model: str(json.model ?? json.hwId ?? json.name, "unknown"),
+    firmware: str(json.versionText ?? json.firmware ?? json.version, "unknown"),
+    serial: typeof json.serial === "string" ? json.serial : undefined
   };
 }
 
-/**
- * Build a "Set Preset Slot" message. Framing `00 21 45 14 08 bank slot` is
- * taken as CONFIRMED (SPEC §10). This has a *visible* effect on the device
- * (the active preset changes), so it is the most reliable end-to-end output
- * test. `bank`/`slot` are sent as-is; their exact base (0- vs 1-indexed) is an
- * open item to confirm against the Electra docs in Phase 2.
- */
-export function buildSwitchPresetSlot(bank: number, slot: number): number[] {
-  return frameElectraSysex([...ELECTRA_CMD.SET_PRESET_SLOT, bank & 0x7f, slot & 0x7f]);
+// NOTE: the Electra protocol reuses the same command bytes for an upload
+// (host→device) and the matching response (device→host): Lua is `01 0C` both
+// ways, preset is `01 01` both ways. So `electraMessageKind` (first match
+// wins) is ambiguous for these — inbound parsers must check the bytes
+// directly. Anything the device sends us with `01 0C`/`01 01` is a response.
+
+function payloadStartsWith(message: readonly number[], a: number, b: number): boolean {
+  const p = electraPayload(message);
+  return p.length >= 2 && p[0] === a && p[1] === b;
 }
 
-/** Format raw bytes as space-separated 2-digit hex (for the MIDI monitor). */
+/** Lua source returned by a REQUEST_LUA (`01 0C`). */
+export function parseLuaResponse(message: readonly number[]): string | null {
+  if (!payloadStartsWith(message, 0x01, 0x0c)) {
+    return null;
+  }
+  return payloadTextAfterCmd(message);
+}
+
+/** Preset JSON returned by a REQUEST_PRESET (`01 01`). Empty/blank slots may
+ *  return nothing parseable — callers treat null as "empty / safe to write". */
+export function parsePresetResponse(
+  message: readonly number[]
+): Record<string, unknown> | null {
+  if (!payloadStartsWith(message, 0x01, 0x01)) {
+    return null;
+  }
+  const text = payloadTextAfterCmd(message).trim();
+  if (!text) {
+    return null;
+  }
+  try {
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+export function parseAck(message: readonly number[]): { ok: boolean } | null {
+  const kind = electraMessageKind(message);
+  if (kind === "ACK") {
+    return { ok: true };
+  }
+  if (kind === "NACK") {
+    return { ok: false };
+  }
+  return null;
+}
+
+export function parseLog(message: readonly number[]): string | null {
+  if (electraMessageKind(message) !== "LOG") {
+    return null;
+  }
+  return payloadTextAfterCmd(message);
+}
+
+/** Extract `local BUNDLE_VERSION = <n>` from a Lua source string. */
+export function parseBundleVersion(luaSource: string): number | null {
+  const m = /BUNDLE_VERSION\s*=\s*(\d+)/.exec(luaSource);
+  return m ? Number.parseInt(m[1], 10) : null;
+}
+
 export function bytesToHex(bytes: readonly number[]): string {
   return bytes.map((b) => (b & 0xff).toString(16).padStart(2, "0")).join(" ");
 }
 
-/**
- * Parse a hex string ("F0 00 21 45 … F7", separators/0x optional) to bytes.
- * Throws on any non-hex token so the debug tool can show a clear error.
- */
 export function hexToBytes(text: string): number[] {
   const tokens = text
     .replace(/0x/gi, " ")
@@ -137,9 +228,6 @@ export function hexToBytes(text: string): number[] {
   });
 }
 
-/** Loose model check: Electra One Mini (and the larger Electra One, which is
- *  protocol-compatible for our purposes). Refined in Phase 2 against real
- *  device-info payloads. */
 export function isMiniCompatible(info: ElectraDeviceInfo): boolean {
   const m = info.model.toLowerCase();
   return m.includes("electra") || m.includes("mini") || m === "unknown";

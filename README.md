@@ -14,11 +14,13 @@ the phased plan.
 
 ## Status
 
-Phase 1 (plumbing): Web MIDI detection, the connection state machine, the
-inspector status/diagnostics panel, and the always-on runtime watcher that
-tracks the selected actor. Provisioning (preset + Lua upload), the surface
-renderers, the digit editor and the Simularca Surface Protocol land in later
-phases — see `SPEC.md §11`.
+Phase 1 (plumbing) + Phase 2 (provisioning): Web MIDI detection with a manual
+port picker, the connection state machine, the inspector
+status/diagnostics/debug panel, and **provisioning** — a minimal "hello"
+preset + Lua app is uploaded to a chosen (never-overwriting) slot and
+activated, so the device screen shows "Simularca vN". The surface renderers,
+the digit editor and the Simularca Surface Protocol land in later phases — see
+`SPEC.md §11`.
 
 ## Install / build
 
