@@ -246,6 +246,30 @@ describe("surface (SSP)", () => {
     expect(applied.at(-1)).toEqual(["a1", "size", 10, { history: false }]);
   });
 
+  it("applies digit-editor (dv) values clamped, tracks drill state", async () => {
+    const dev = makeDevice({ deviceInfo: GOOD_INFO, lua: SURFACE_MAIN_LUA });
+    const s = makeSession({ handle: dev.handle });
+    const applied: unknown[] = [];
+    s.setApply((id, k, v, o) => applied.push([id, k, v, o]));
+    await s.start();
+    s.setSelectedActor(SNAP);
+
+    dev.emit(frameElectraSysex([0x7f, 0x00, ...asciiBytes("scp dv 1 7.5")]));
+    await new Promise((r) => setTimeout(r));
+    expect(applied.at(-1)).toEqual(["a1", "size", 7.5, { history: false }]);
+
+    dev.emit(frameElectraSysex([0x7f, 0x00, ...asciiBytes("scp dv 1 99")]));
+    await new Promise((r) => setTimeout(r));
+    expect(applied.at(-1)).toEqual(["a1", "size", 10, { history: false }]); // clamped to max
+
+    dev.emit(frameElectraSysex([0x7f, 0x00, ...asciiBytes("scp drill 1")]));
+    await new Promise((r) => setTimeout(r));
+    expect(s.getState().drillSlot).toBe(1);
+    dev.emit(frameElectraSysex([0x7f, 0x00, ...asciiBytes("scp drillx")]));
+    await new Promise((r) => setTimeout(r));
+    expect(s.getState().drillSlot).toBeNull();
+  });
+
   it("CLEARs when selection goes away", async () => {
     const dev = makeDevice({ deviceInfo: GOOD_INFO, lua: SURFACE_MAIN_LUA });
     const s = makeSession({ handle: dev.handle });

@@ -72,7 +72,31 @@ const cardStyle: React.CSSProperties = {
   border: "1px solid rgba(255,255,255,0.08)",
   borderRadius: 8,
   padding: 12,
-  marginBottom: 10
+  marginBottom: 10,
+  // The host mounts this plugin inside `.custom-inspector` (display: grid).
+  // Grid items default to `min-width: auto`, so a card refuses to shrink below
+  // its widest non-wrapping child (the port <select>s, the raw-SysEx <input>),
+  // pinning the single grid track wider than the user-resized inspector and
+  // forcing a horizontal scrollbar. `minWidth: 0` lets the card shrink so the
+  // track collapses to the available width and text reflows instead.
+  minWidth: 0,
+  maxWidth: "100%"
+};
+
+// Shared style for the scrolling monospace log panes (MIDI monitor,
+// diagnostics). `minWidth: 0` keeps them shrinkable; a long unbreakable token
+// scrolls within the box (overflowX) / wraps (overflowWrap) instead of
+// widening the whole inspector.
+const logPaneStyle: React.CSSProperties = {
+  marginTop: 6,
+  maxHeight: 160,
+  minWidth: 0,
+  overflowY: "auto",
+  overflowX: "auto",
+  overflowWrap: "anywhere",
+  fontFamily: "monospace",
+  fontSize: 11,
+  lineHeight: 1.5
 };
 
 function Row(props: { label: string; value: string; tone?: "default" | "warning" | "error" }) {
@@ -221,7 +245,10 @@ function DebugTools(props: { session: ElectraSession; state: ElectraConnectionSt
       </div>
       <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
         <input
-          style={{ flex: 1, fontFamily: "monospace" }}
+          // flex:1 with the default min-width:auto makes this input refuse to
+          // shrink below its intrinsic text size — a prime contributor to the
+          // inspector overflow. minWidth:0 lets it collapse with the card.
+          style={{ flex: 1, minWidth: 0, fontFamily: "monospace" }}
           value={hex}
           onChange={(e) => setHex(e.target.value)}
           placeholder="F0 00 21 45 … F7"
@@ -238,16 +265,7 @@ function DebugTools(props: { session: ElectraSession; state: ElectraConnectionSt
           Clear
         </button>
       </div>
-      <div
-        style={{
-          marginTop: 6,
-          maxHeight: 160,
-          overflowY: "auto",
-          fontFamily: "monospace",
-          fontSize: 11,
-          lineHeight: 1.5
-        }}
-      >
+      <div style={logPaneStyle}>
         {state.midiMonitor.length === 0 ? (
           <div style={{ opacity: 0.5 }}>No traffic yet.</div>
         ) : (
@@ -346,16 +364,7 @@ export function ElectraOneInspector(props: PluginInspectorComponentProps) {
 
       <div style={cardStyle}>
         <strong style={{ opacity: 0.8 }}>Diagnostics</strong>
-        <div
-          style={{
-            marginTop: 6,
-            maxHeight: 160,
-            overflowY: "auto",
-            fontFamily: "monospace",
-            fontSize: 11,
-            lineHeight: 1.5
-          }}
-        >
+        <div style={logPaneStyle}>
           {state.log.length === 0 ? (
             <div style={{ opacity: 0.5 }}>No log entries.</div>
           ) : (

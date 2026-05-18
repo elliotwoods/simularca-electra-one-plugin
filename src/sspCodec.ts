@@ -24,6 +24,8 @@ export interface SurfaceField {
   min?: number;
   max?: number;
   step?: number;
+  /** Fractional digits the field allows — drives the on-device digit editor. */
+  precision?: number;
   options?: string[];
 }
 
@@ -73,6 +75,7 @@ export function encodeSurfacePayload(desc: SurfaceDescriptor): string {
       f.min ?? "",
       f.max ?? "",
       f.step ?? "",
+      f.precision ?? "",
       (f.options ?? []).map((o) => sanitizeToken(o, 16)).join(",")
     ].join(US)
   );
@@ -100,7 +103,8 @@ export function decodeSurfacePayload(payload: string): SurfaceDescriptor | null 
       min: c[5] ? Number(c[5]) : undefined,
       max: c[6] ? Number(c[6]) : undefined,
       step: c[7] ? Number(c[7]) : undefined,
-      options: c[8] ? c[8].split(",") : undefined
+      precision: c[8] ? Number(c[8]) : undefined,
+      options: c[9] ? c[9].split(",") : undefined
     });
   }
   return { actorId: "", actorName: head[1] ?? "", fields };
@@ -126,7 +130,10 @@ export function clearCommand(): string {
 /* ----------------------------------------------------- device → host */
 
 export type DeviceEvent =
-  | { type: "value"; idx: number; value: string }
+  | { type: "value"; idx: number; value: string } // fader path (0..127, scaled host-side)
+  | { type: "dvalue"; idx: number; value: string } // digit editor (direct semantic value)
+  | { type: "drill"; idx: number } // entered the digit editor on slot idx
+  | { type: "drillexit" } // left the digit editor
   | { type: "ready"; bundle: number | null }
   | { type: "focus"; idx: number }
   | { type: "log"; text: string };
@@ -137,6 +144,17 @@ export function decodeDeviceLine(line: string): DeviceEvent | null {
   let m = /^scp\s+vc\s+(\d+)\s+(.+)$/.exec(t);
   if (m) {
     return { type: "value", idx: Number(m[1]), value: m[2] };
+  }
+  m = /^scp\s+dv\s+(\d+)\s+(.+)$/.exec(t);
+  if (m) {
+    return { type: "dvalue", idx: Number(m[1]), value: m[2] };
+  }
+  m = /^scp\s+drill\s+(\d+)$/.exec(t);
+  if (m) {
+    return { type: "drill", idx: Number(m[1]) };
+  }
+  if (t === "scp drillx") {
+    return { type: "drillexit" };
   }
   m = /^scp\s+focus\s+(\d+)$/.exec(t);
   if (m) {

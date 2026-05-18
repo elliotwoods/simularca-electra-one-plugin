@@ -351,9 +351,16 @@ never overwrite. Long labels → device-side shortening. Firmware <
   0..127 fader scaled host-side (`decodeDeviceRaw`) — semantic on-device
   editing is Phase 4. The Lua control API (formatter binding,
   `valueObject:getControl`) is the on-device iteration point.
-- **Phase 4 — Numbers + digit editor.** Ranged/rangeless renderers; `digits`
-  module; digit drill-down (zoom, carry/borrow, link lines). Vitest for digit
-  math.
+- **Phase 4 — Numbers + digit editor (done, on-device tuning pending).**
+  `digits.ts` place-value model (4-digit window, per-knob nudge, automatic
+  carry/borrow through the whole number, emergent sign, zoom clamp, growth) —
+  14 exhaustive vitest cases. SSP gains `precision`, `scp dv` (direct digit
+  value), `scp drill`/`scp drillx`. Device bundle v4: a DRILL page + Lua digit
+  editor mirroring digits.ts, entered by a **pot tap** (touch down→up, no turn
+  — the Electra Lua API has no encoder-push callback), bottom knobs = per-digit
+  nudge, top-left = zoom; any tap exits. Host applies `dv` clamped to range and
+  tracks `drillSlot`. The Lua custom-control paint / relative-encoder delta is
+  the on-device iteration point.
 - **Phase 5 — Vectors + enums.** Vector renderer + per-channel digit editing;
   enum/select option-list drill-down with in-place `SET_FIELD_META` refresh.
 - **Phase 6 — Polish.** Section-aware page breaks; Back/Prev/Next; knob-touch

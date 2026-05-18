@@ -34,10 +34,24 @@ describe("surface payload round-trip", () => {
     const round = decodeSurfacePayload(encodeSurfacePayload(desc));
     expect(round?.actorName).toBe("Cube");
     expect(round?.fields).toEqual([
-      { key: "", idx: 0, kind: "toggle", label: "On", value: "1", min: undefined, max: undefined, step: undefined, options: undefined },
-      { key: "", idx: 1, kind: "number", label: "Size", value: "2.50", min: 0, max: 10, step: 0.5, options: undefined },
-      { key: "", idx: 2, kind: "list", label: "Mode", value: "1", min: undefined, max: undefined, step: undefined, options: ["a", "b", "c"] }
+      { key: "", idx: 0, kind: "toggle", label: "On", value: "1", min: undefined, max: undefined, step: undefined, precision: undefined, options: undefined },
+      { key: "", idx: 1, kind: "number", label: "Size", value: "2.50", min: 0, max: 10, step: 0.5, precision: undefined, options: undefined },
+      { key: "", idx: 2, kind: "list", label: "Mode", value: "1", min: undefined, max: undefined, step: undefined, precision: undefined, options: ["a", "b", "c"] }
     ]);
+  });
+
+  it("round-trips the precision column", () => {
+    const d = {
+      actorId: "a",
+      actorName: "N",
+      fields: [{ key: "n", idx: 0, kind: "number" as const, label: "N", value: "1.50", min: 0, max: 9, step: 0.1, precision: 2 }]
+    };
+    expect(decodeSurfacePayload(encodeSurfacePayload(d))?.fields[0]).toMatchObject({
+      min: 0,
+      max: 9,
+      step: 0.1,
+      precision: 2
+    });
   });
 
   it("decodeSurfacePayload rejects a non-A payload", () => {
@@ -57,10 +71,13 @@ describe("command framing", () => {
 });
 
 describe("decodeDeviceLine", () => {
-  it("parses value / ready / focus / log, ignores noise", () => {
+  it("parses value / dvalue / drill / ready / focus / log, ignores noise", () => {
     expect(decodeDeviceLine("scp vc 4 0.75")).toEqual({ type: "value", idx: 4, value: "0.75" });
+    expect(decodeDeviceLine("scp dv 1 -3.250")).toEqual({ type: "dvalue", idx: 1, value: "-3.250" });
+    expect(decodeDeviceLine("scp drill 5")).toEqual({ type: "drill", idx: 5 });
+    expect(decodeDeviceLine("scp drillx")).toEqual({ type: "drillexit" });
     expect(decodeDeviceLine("scp focus 2")).toEqual({ type: "focus", idx: 2 });
-    expect(decodeDeviceLine("simularca:ready bundle=2")).toEqual({ type: "ready", bundle: 2 });
+    expect(decodeDeviceLine("simularca:ready bundle=4")).toEqual({ type: "ready", bundle: 4 });
     expect(decodeDeviceLine("scp ready bundle=3")).toEqual({ type: "ready", bundle: 3 });
     expect(decodeDeviceLine("scp hello world")).toEqual({ type: "log", text: "hello world" });
     expect(decodeDeviceLine("unrelated device chatter")).toBeNull();

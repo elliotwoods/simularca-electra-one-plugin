@@ -39,6 +39,7 @@ interface Mapped {
   min?: number;
   max?: number;
   step?: number;
+  precision?: number;
   options?: string[];
 }
 
@@ -54,7 +55,8 @@ function mapField(def: ParameterDefinition, params: ParameterValues): Mapped | n
         value: formatNumber(raw, def.precision),
         min: def.min,
         max: def.max,
-        step: def.step
+        step: def.step,
+        precision: def.precision
       };
     case "select": {
       const options = def.options ?? [];
@@ -116,6 +118,7 @@ export function mapInspectorToSurface(
       min: mapped.min,
       max: mapped.max,
       step: mapped.step,
+      precision: mapped.precision,
       options: mapped.options
     });
   }
@@ -161,6 +164,28 @@ export function decodeDeviceRaw(
     default:
       return undefined;
   }
+}
+
+/**
+ * Digit-editor (drill) values arrive as the *actual* semantic number, not a
+ * 0..127 fader position. Parse + clamp to the field's range.
+ */
+export function decodeDirectNumber(
+  field: Pick<SurfaceField, "min" | "max">,
+  raw: string
+): number | undefined {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) {
+    return undefined;
+  }
+  let v = n;
+  if (typeof field.min === "number") {
+    v = Math.max(field.min, v);
+  }
+  if (typeof field.max === "number") {
+    v = Math.min(field.max, v);
+  }
+  return v;
 }
 
 /**

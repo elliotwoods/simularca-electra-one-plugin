@@ -40,7 +40,7 @@ import {
 } from "./electraSysex";
 import { SURFACE_MAIN_LUA, SURFACE_PRESET_JSON, SURFACE_PRESET_MARKER } from "./surfaceBundle";
 import type { PluginHostActorSnapshot } from "./contracts";
-import { decodeDeviceRaw, mapInspectorToSurface } from "./inspectorMapping";
+import { decodeDeviceRaw, decodeDirectNumber, mapInspectorToSurface } from "./inspectorMapping";
 import {
   clearCommand,
   decodeDeviceLine,
@@ -118,6 +118,7 @@ export class ElectraSession {
     targetSlot: { bank: 2, slot: 0 },
     presetSlot: null,
     mirroredActor: null,
+    drillSlot: null,
     lastError: null,
     log: []
   };
@@ -327,6 +328,27 @@ export class ElectraSession {
     }
   }
 
+  /** Digit-editor (drill) value: the actual semantic number, clamped. */
+  private onDeviceDirect(idx: number, raw: string): void {
+    if (!this.descriptor) {
+      return;
+    }
+    const field = this.descriptor.fields.find((f) => f.idx === idx);
+    if (!field) {
+      return;
+    }
+    const decoded = decodeDirectNumber(field, raw);
+    if (decoded === undefined) {
+      return;
+    }
+    this.suppressKey = field.key;
+    this.suppressUntil = Date.now() + SURFACE_SUPPRESS_MS;
+    this.log("info", `digit edit: ${field.label} -> ${String(decoded)}`);
+    if (this.applyFn && this.snapshot) {
+      this.applyFn(this.snapshot.id, field.key, decoded, { history: false });
+    }
+  }
+
   /* ----------------------------------------------------------- lifecycle */
 
   async start(): Promise<void> {
@@ -380,6 +402,14 @@ export class ElectraSession {
           const ev = decodeDeviceLine(logText);
           if (ev && ev.type === "value") {
             this.onDeviceValue(ev.idx, ev.value);
+          } else if (ev && ev.type === "dvalue") {
+            this.onDeviceDirect(ev.idx, ev.value);
+          } else if (ev && ev.type === "drill") {
+            this.state.drillSlot = ev.idx;
+            this.log("info", `device: digit editor open on slot ${ev.idx}`);
+          } else if (ev && ev.type === "drillexit") {
+            this.state.drillSlot = null;
+            this.log("info", "device: digit editor closed");
           } else {
             this.log("info", `device: ${logText}`);
           }

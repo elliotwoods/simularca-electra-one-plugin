@@ -21,8 +21,11 @@ activates it), and the **Simularca Surface Protocol** — the selected actor's
 inspector fields are pushed to the 8 device slots and device encoder edits are
 applied back through the host bridge (with loop-suppression). The host/protocol
 side is fully unit-tested; the device-side Lua rendering + encoder feedback is
-a first cut to tune against hardware. Semantic on-device editing (digit
-editor), vectors/enums and paging land in later phases — see `SPEC.md §11`.
+a first cut to tune against hardware. Phase 4 adds the on-device **digit
+editor**: tap an encoder on a numeric slot to open a full-screen place-value
+editor (bottom knobs nudge digits with automatic carry/borrow, top-left zooms);
+the `digits` math is exhaustively unit-tested. Vectors/enums drill-downs and
+paging land in later phases — see `SPEC.md §11`.
 
 ## Install / build
 
