@@ -152,24 +152,31 @@ export function decodeDeviceLine(line: string): DeviceEvent | null {
     .replace(/^\d+\s+/, "")
     .replace(/^lua:\s*/i, "")
     .trim();
-  let m = /^scp\s+vc\s+(\d+)\s+(.+)$/.exec(t);
+  // Field indices may arrive as a Lua FLOAT render ("0.0", "12.0"): the
+  // device computes some indices via arithmetic that yields a float, and
+  // Electra's tostring renders that as "N.0". A strict `\d+` silently
+  // dropped every such line (the top-row digit editor's `scp dv`/`scp focus`
+  // all emit float indices) while the bottom row happened to stay integer.
+  // Accept an optional fractional part and truncate to the integer index.
+  const idx = (s: string): number => Math.trunc(Number(s));
+  let m = /^scp\s+vc\s+(\d+(?:\.\d+)?)\s+(.+)$/.exec(t);
   if (m) {
-    return { type: "value", idx: Number(m[1]), value: m[2] };
+    return { type: "value", idx: idx(m[1]), value: m[2] };
   }
-  m = /^scp\s+dv\s+(\d+)\s+(.+)$/.exec(t);
+  m = /^scp\s+dv\s+(\d+(?:\.\d+)?)\s+(.+)$/.exec(t);
   if (m) {
-    return { type: "dvalue", idx: Number(m[1]), value: m[2] };
+    return { type: "dvalue", idx: idx(m[1]), value: m[2] };
   }
-  m = /^scp\s+drill\s+(\d+)$/.exec(t);
+  m = /^scp\s+drill\s+(\d+(?:\.\d+)?)$/.exec(t);
   if (m) {
-    return { type: "drill", idx: Number(m[1]) };
+    return { type: "drill", idx: idx(m[1]) };
   }
   if (t === "scp drillx") {
     return { type: "drillexit" };
   }
-  m = /^scp\s+focus\s+(\d+)$/.exec(t);
+  m = /^scp\s+focus\s+(\d+(?:\.\d+)?)$/.exec(t);
   if (m) {
-    return { type: "focus", idx: Number(m[1]) };
+    return { type: "focus", idx: idx(m[1]) };
   }
   m = /^(?:scp\s+ready|simularca:ready)\s+bundle=(\d+)$/.exec(t);
   if (m) {

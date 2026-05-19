@@ -83,6 +83,27 @@ describe("decodeDeviceLine", () => {
     expect(decodeDeviceLine("unrelated device chatter")).toBeNull();
   });
 
+  it("accepts Lua float-rendered indices (hardware emits 'scp dv 0.0 …')", () => {
+    // The device computes some indices via arithmetic that yields a Lua
+    // float; Electra's tostring renders it "N.0". A strict \d+ silently
+    // dropped EVERY such line on real hardware — all top-row digit-editor
+    // edits and all focus events — while the bottom row stayed integer.
+    expect(decodeDeviceLine("scp dv 0.0 100.0")).toEqual({
+      type: "dvalue",
+      idx: 0,
+      value: "100.0"
+    });
+    expect(decodeDeviceLine("scp focus 0.0")).toEqual({ type: "focus", idx: 0 });
+    expect(decodeDeviceLine("scp vc 3.0 64")).toEqual({
+      type: "value",
+      idx: 3,
+      value: "64"
+    });
+    expect(decodeDeviceLine("scp drill 2.0")).toEqual({ type: "drill", idx: 2 });
+    // Integer indices still parse exactly as before (no regression).
+    expect(decodeDeviceLine("scp focus 12")).toEqual({ type: "focus", idx: 12 });
+  });
+
   it("strips the Electra log millisecond + lua: prefixes", () => {
     // Real device Log SysEx text: "<ms-from-start> lua: <print output>".
     expect(decodeDeviceLine("147362 lua: scp vc 4 0.75")).toEqual({
