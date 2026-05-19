@@ -287,6 +287,62 @@ describe("surface (SSP)", () => {
     expect(s.getState().focusedSlot).toBe(1);
   });
 
+  it("mirrors the 4-control test surface and loops device edits back locally", async () => {
+    const dev = makeDevice({ deviceInfo: GOOD_INFO, lua: SURFACE_MAIN_LUA });
+    const s = makeSession({ handle: dev.handle });
+    const applied: unknown[] = [];
+    s.setApply((id, k, v, o) => applied.push([id, k, v, o]));
+    await s.start();
+
+    s.setTestSurface(true);
+    expect(s.getState().mirroredActor?.name).toBe("Test Surface");
+    const out = s.getState().midiMonitor.filter((m) => m.dir === "out").map((m) => m.hex);
+    expect(out.some((h) => h.startsWith("f0 00 21 45 08 0d"))).toBe(true); // SET_ACTOR
+
+    // Fields are exactly the 4 schema params (no transform rows):
+    //   0 ranged number, 1 rangeless number, 2 integer, 3 select(list).
+    // Ranged maps raw 127 across [min,max]; the two rangeless numbers have
+    // no min/max so decodeDeviceRaw returns the raw 0..127 directly.
+    dev.emit(frameElectraSysex([0x7f, 0x00, ...asciiBytes("scp vc 0 127")]));
+    await new Promise((r) => setTimeout(r));
+    expect(s.getState().testSurface?.tRanged).toBe(100);
+
+    dev.emit(frameElectraSysex([0x7f, 0x00, ...asciiBytes("scp vc 1 127")]));
+    await new Promise((r) => setTimeout(r));
+    expect(s.getState().testSurface?.tRangeless).toBe(127);
+
+    dev.emit(frameElectraSysex([0x7f, 0x00, ...asciiBytes("scp vc 2 127")]));
+    await new Promise((r) => setTimeout(r));
+    expect(s.getState().testSurface?.tInt).toBe(127);
+
+    dev.emit(frameElectraSysex([0x7f, 0x00, ...asciiBytes("scp vc 3 127")]));
+    await new Promise((r) => setTimeout(r));
+    expect(s.getState().testSurface?.tSelect).toBe("Delta");
+
+    // Self-contained: nothing routed through the host bridge.
+    expect(applied).toEqual([]);
+  });
+
+  it("disabling the test surface CLEARs the device", async () => {
+    const dev = makeDevice({ deviceInfo: GOOD_INFO, lua: SURFACE_MAIN_LUA });
+    const s = makeSession({ handle: dev.handle });
+    await s.start();
+    s.setTestSurface(true);
+    s.setTestSurface(false);
+    expect(s.getState().testSurface).toBeNull();
+    const execs = s
+      .getState()
+      .midiMonitor.filter((m) => m.dir === "out")
+      .map((m) => m.hex)
+      .filter((h) => h.startsWith("f0 00 21 45 08 0d"));
+    const body = (execs.at(-1) ?? "")
+      .split(" ")
+      .slice(6, -1)
+      .map((b) => String.fromCharCode(parseInt(b, 16)))
+      .join("");
+    expect(body).toBe('ssp("C")');
+  });
+
   it("CLEARs when selection goes away", async () => {
     const dev = makeDevice({ deviceInfo: GOOD_INFO, lua: SURFACE_MAIN_LUA });
     const s = makeSession({ handle: dev.handle });

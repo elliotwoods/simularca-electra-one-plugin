@@ -15,7 +15,12 @@
 // The digit math mirrors src/digits.ts (exhaustively unit-tested). Device-side
 // layout / 7-seg scale / fader-vs-custom coexistence are on-device tunables.
 
-import { SURFACE_BUNDLE_VERSION, SURFACE_PRESET_MARKER } from "./types";
+import {
+  DEFAULT_RENDER_OPTIONS,
+  type ElectraRenderOptions,
+  SURFACE_BUNDLE_VERSION,
+  SURFACE_PRESET_MARKER
+} from "./types";
 
 const COLS = [8, 206, 404, 602];
 const CTRL_W = 184;
@@ -96,7 +101,123 @@ export const SURFACE_PRESET: Record<string, unknown> = {
 export const SURFACE_PRESET_JSON = JSON.stringify(SURFACE_PRESET);
 
 // Must stay 7-bit ASCII (uploaded raw over SysEx; asciiBytes() throws otherwise).
-export const SURFACE_MAIN_LUA = `-- Simularca Surface - generated bundle (split-row, v${SURFACE_BUNDLE_VERSION})
+// The bundle is ASSEMBLED per render-options: each disabled detail OMITS its
+// Lua entirely (no on-device `if` branch) so the Mini's paint loop runs the
+// minimal code. Default options reproduce the full v17 renderer byte-for-byte.
+export function buildSurfaceLua(
+  opts: ElectraRenderOptions = DEFAULT_RENDER_OPTIONS
+): string {
+  const rounded = opts.roundedCaps;
+  const ghost = opts.ghostSegments;
+  const jointDisc = rounded
+    ? `-- px gap held between adjacent segments where they meet at a corner.
+-- MUST be declared before drawSeg -- drawSeg closes over it (a local
+-- declared after the function would resolve to a nil global instead).
+local JOINT = 2
+
+-- Filled disc via horizontal scanlines (the device has no circle/stroke
+-- primitive). discHW is the half-width-per-row profile for radius r,
+-- precomputed once per frame (r is frame-constant) and shared by every cap.
+local function drawDisc(discHW, r, cx, cy)
+  for dy = -r, r do
+    local hw = discHW[dy + r + 1]
+    graphics.fillRect(cx - hw, cy + dy, 2 * hw + 1, 1)
+  end
+end
+`
+    : "";
+  const drawSegBody = rounded
+    ? `-- One "stadium" segment: a body rect of thickness 2r between two cap
+-- centres, plus a round cap at each end. Endpoints are inset by r+JOINT
+-- from the digit corner so perpendicular neighbours stand ~JOINT px apart.
+-- If the body collapses (tiny digit), a single centred disc is drawn.
+local function drawSeg(seg, x, y, w, h, discHW, r)
+  local h2 = math.floor(h / 2)
+  local J = JOINT
+  local xl = x + r
+  local xr = x + w - r
+  local ya = y + r
+  local yg = y + h2
+  local yd = y + h - r
+  if seg == "a" or seg == "g" or seg == "d" then
+    local yc = (seg == "a") and ya or ((seg == "g") and yg or yd)
+    local lcx = xl + r + J
+    local rcx = xr - r - J
+    if rcx - lcx > 0 then
+      graphics.fillRect(lcx, yc - r, rcx - lcx, 2 * r + 1)
+      drawDisc(discHW, r, lcx, yc)
+      drawDisc(discHW, r, rcx, yc)
+    else
+      drawDisc(discHW, r, math.floor((xl + xr) / 2), yc)
+    end
+    return
+  end
+  local xc, yA, yB
+  if seg == "f" then
+    xc, yA, yB = xl, ya, yg
+  elseif seg == "b" then
+    xc, yA, yB = xr, ya, yg
+  elseif seg == "e" then
+    xc, yA, yB = xl, yg, yd
+  else
+    xc, yA, yB = xr, yg, yd
+  end
+  local tcy = yA + r + J
+  local bcy = yB - r - J
+  if bcy - tcy > 0 then
+    graphics.fillRect(xc - r, tcy, 2 * r + 1, bcy - tcy)
+    drawDisc(discHW, r, xc, tcy)
+    drawDisc(discHW, r, xc, bcy)
+  else
+    drawDisc(discHW, r, xc, math.floor((yA + yB) / 2))
+  end
+end`
+    : `-- Flat rectangle segments (rounded caps disabled): one fillRect per
+-- lit segment, no disc caps -- far fewer draw calls = faster device paint.
+-- discHW/r are accepted but unused (drawDigit's signature is constant).
+local function drawSeg(seg, x, y, w, h, discHW, r)
+  local h2 = math.floor(h / 2)
+  local t = math.max(2, math.floor(h / 12))
+  if seg == "a" then
+    graphics.fillRect(x + t, y, w - 2 * t, t)
+  elseif seg == "f" then
+    graphics.fillRect(x, y + t, t, h2 - t)
+  elseif seg == "b" then
+    graphics.fillRect(x + w - t, y + t, t, h2 - t)
+  elseif seg == "g" then
+    graphics.fillRect(x + t, y + h2 - math.floor(t / 2), w - 2 * t, t)
+  elseif seg == "e" then
+    graphics.fillRect(x, y + h2, t, h2 - t)
+  elseif seg == "c" then
+    graphics.fillRect(x + w - t, y + h2, t, h2 - t)
+  else
+    graphics.fillRect(x + t, y + h - t, w - 2 * t, t)
+  end
+end`;
+  const colOff = ghost
+    ? `-- Unlit ("ghost") 7-seg: a full black "8" painted behind every lit digit.
+local COL_OFF = 0x000000`
+    : `-- (ghost off-segments disabled: COL_OFF and the off-pass are not emitted)`;
+  const discPre = rounded
+    ? `  -- Cap radius is frame-constant (dt is): build the scanline-disc profile
+  -- once and share it across every cap of every digit (off + lit passes).
+  local r = math.max(1, math.floor(dt / 2))
+  local discHW = {}
+  for dy = -r, r do
+    discHW[dy + r + 1] = math.floor(math.sqrt(r * r - dy * dy) + 0.5)
+  end`
+    : `  -- rounded caps disabled: drawSeg ignores these; kept for arg parity
+  local r = 0
+  local discHW = nil`;
+  const ghostMinus = ghost
+    ? `    drawDigit(x, yTop, dw, dh, "g", discHW, r, COL_OFF)
+`
+    : "";
+  const ghostDigit = ghost
+    ? `    drawDigit(x, yTop, dw, dh, "abcdefg", discHW, r, COL_OFF)
+`
+    : "";
+  return `-- Simularca Surface - generated bundle (split-row, v${SURFACE_BUNDLE_VERSION}, caps=${rounded ? "on" : "off"}, ghost=${ghost ? "on" : "off"})
 local BUNDLE_VERSION = ${SURFACE_BUNDLE_VERSION}
 local US = string.char(31)
 local RS = string.char(30)
@@ -194,28 +315,23 @@ local function hasSeg(mask, ch)
   return string.find(mask, ch, 1, true) ~= nil
 end
 
-local function drawDigit(x, y, w, h, t, mask)
-  local h2 = math.floor(h / 2)
-  if hasSeg(mask, "a") then
-    graphics.fillRect(x + t, y, w - 2 * t, t)
+${jointDisc}
+local ALLSEG = { "a", "b", "c", "d", "e", "f", "g" }
+
+${drawSegBody}
+
+-- offCol ~= nil -> ghost pass: drawDigit owns the colour, paints the given
+-- mask in offCol (callers pass the full "8" for digits, "g" for a minus).
+-- offCol == nil -> lit pass: the caller already set the colour; never set it.
+local function drawDigit(x, y, w, h, mask, discHW, r, offCol)
+  if offCol ~= nil then
+    graphics.setColor(offCol)
   end
-  if hasSeg(mask, "f") then
-    graphics.fillRect(x, y + t, t, h2 - t)
-  end
-  if hasSeg(mask, "b") then
-    graphics.fillRect(x + w - t, y + t, t, h2 - t)
-  end
-  if hasSeg(mask, "g") then
-    graphics.fillRect(x + t, y + h2 - math.floor(t / 2), w - 2 * t, t)
-  end
-  if hasSeg(mask, "e") then
-    graphics.fillRect(x, y + h2, t, h2 - t)
-  end
-  if hasSeg(mask, "c") then
-    graphics.fillRect(x + w - t, y + h2, t, h2 - t)
-  end
-  if hasSeg(mask, "d") then
-    graphics.fillRect(x + t, y + h - t, w - 2 * t, t)
+  for i = 1, 7 do
+    local seg = ALLSEG[i]
+    if hasSeg(mask, seg) then
+      drawSeg(seg, x, y, w, h, discHW, r)
+    end
   end
 end
 
@@ -287,6 +403,7 @@ local COL_HI = 0xffffff
 -- Non-selected picker cell fill: the scrollbar-track dark, so the
 -- COL_NORMAL label on top stays readable.
 local COL_CELL_BG = 0x223044
+${colOff}
 
 -- Scale a 0xRRGGBB colour's brightness by pct (per channel). Used to dim
 -- the non-touched digits while a digit encoder is held.
@@ -423,6 +540,7 @@ local function drawReadout()
   local dh = math.min(areaH, math.floor(dw / 0.58))
   local dt = math.max(3, math.floor(dh / 12))
   local gap = math.max(4, math.floor(dw * 0.28))
+${discPre}
   local total = -gap
   if v < 0 then
     total = total + dw + gap
@@ -437,8 +555,8 @@ local function drawReadout()
   local yTop = areaTop + math.floor((areaH - dh) / 2)
   linkTopY = yTop
   if v < 0 then
-    graphics.setColor(highlightedKnob ~= nil and dim(COL_NORMAL, 0.5) or COL_NORMAL)
-    drawDigit(x, yTop, dw, dh, dt, "g")
+${ghostMinus}    graphics.setColor(highlightedKnob ~= nil and dim(COL_NORMAL, 0.5) or COL_NORMAL)
+    drawDigit(x, yTop, dw, dh, "g", discHW, r)
     x = x + dw + gap
   end
   for e = topE, botE, -1 do
@@ -460,8 +578,8 @@ local function drawReadout()
     if highlightedKnob ~= nil and not selected then
       col = dim(col, 0.5)
     end
-    graphics.setColor(col)
-    drawDigit(x, yTop, dw, dh, dt, SEG[tostring(d)] or "")
+${ghostDigit}    graphics.setColor(col)
+    drawDigit(x, yTop, dw, dh, SEG[tostring(d)] or "", discHW, r)
     if knob ~= nil then
       digitCx[knob] = x + math.floor(dw / 2)
     end
@@ -876,5 +994,10 @@ function preset.onEnter()
   print("simularca:ready bundle=" .. BUNDLE_VERSION)
 end
 `;
+}
+
+/** Default-options build, kept as a const for back-compat (tests + the
+ *  device mock). Equals the full v17 renderer. */
+export const SURFACE_MAIN_LUA = buildSurfaceLua(DEFAULT_RENDER_OPTIONS);
 
 export { SURFACE_BUNDLE_VERSION, SURFACE_PRESET_MARKER };

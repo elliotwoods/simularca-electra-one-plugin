@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { asciiBytes, parseBundleVersion } from "../src/electraSysex";
-import { SURFACE_BUNDLE_VERSION, SURFACE_MAIN_LUA, SURFACE_PRESET_JSON } from "../src/surfaceBundle";
+import {
+  buildSurfaceLua,
+  SURFACE_BUNDLE_VERSION,
+  SURFACE_MAIN_LUA,
+  SURFACE_PRESET_JSON
+} from "../src/surfaceBundle";
+import { DEFAULT_RENDER_OPTIONS } from "../src/types";
 
 describe("surface bundle", () => {
   it("preset JSON and Lua are strict 7-bit ASCII (SysEx-safe)", () => {
@@ -80,5 +86,52 @@ describe("surface bundle", () => {
     expect(SURFACE_MAIN_LUA).not.toContain("function draw7(");
     expect(SURFACE_MAIN_LUA).not.toContain("function drillKnob(");
     expect(SURFACE_MAIN_LUA).not.toContain("function slotChanged(");
+  });
+});
+
+describe("buildSurfaceLua render-option variants", () => {
+  const VARIANTS = [
+    { roundedCaps: true, ghostSegments: true },
+    { roundedCaps: true, ghostSegments: false },
+    { roundedCaps: false, ghostSegments: true },
+    { roundedCaps: false, ghostSegments: false }
+  ];
+
+  it("default options reproduce the back-compat SURFACE_MAIN_LUA", () => {
+    expect(buildSurfaceLua(DEFAULT_RENDER_OPTIONS)).toBe(SURFACE_MAIN_LUA);
+    expect(buildSurfaceLua()).toBe(SURFACE_MAIN_LUA);
+  });
+
+  it("every variant stays 7-bit ASCII, stamps the version, keeps core fns", () => {
+    for (const v of VARIANTS) {
+      const lua = buildSurfaceLua(v);
+      expect(() => asciiBytes(lua)).not.toThrow();
+      expect(parseBundleVersion(lua)).toBe(SURFACE_BUNDLE_VERSION);
+      for (const fn of ["function drawReadout(", "function paint(", "function drawSeg("]) {
+        expect(lua).toContain(fn);
+      }
+    }
+  });
+
+  it("roundedCaps OFF omits the disc/JOINT code; ON includes it", () => {
+    const on = buildSurfaceLua({ roundedCaps: true, ghostSegments: true });
+    expect(on).toContain("local function drawDisc(");
+    expect(on).toContain("local JOINT = 2");
+
+    const off = buildSurfaceLua({ roundedCaps: false, ghostSegments: true });
+    expect(off).not.toContain("local function drawDisc(");
+    expect(off).not.toContain("local JOINT = 2");
+    expect(off).not.toContain("drawDisc(discHW");
+    expect(off).toContain("Flat rectangle segments");
+  });
+
+  it("ghostSegments OFF omits COL_OFF and the off-pass; ON includes them", () => {
+    const on = buildSurfaceLua({ roundedCaps: true, ghostSegments: true });
+    expect(on).toContain("local COL_OFF = 0x000000");
+    expect(on).toContain(', "abcdefg", discHW, r, COL_OFF)');
+
+    const off = buildSurfaceLua({ roundedCaps: true, ghostSegments: false });
+    expect(off).not.toContain("local COL_OFF =");
+    expect(off).not.toContain("COL_OFF)");
   });
 });

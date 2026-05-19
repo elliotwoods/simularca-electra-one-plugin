@@ -4,12 +4,15 @@
 // bundles (see README "Known load-time verification items").
 
 import {
+  DEFAULT_RENDER_OPTIONS,
   MIN_FIRMWARE,
+  renderOptionsSig,
   SURFACE_BUNDLE_VERSION,
   type ElectraConnectionPhase,
   type ElectraConnectionState,
   type ElectraLogEntry,
-  type ElectraPortOverride
+  type ElectraPortOverride,
+  type ElectraRenderOptions
 } from "./types";
 import {
   enumerateMidiPorts,
@@ -41,8 +44,13 @@ import {
   parseLuaResponse,
   parsePresetResponse
 } from "./electraSysex";
-import { SURFACE_MAIN_LUA, SURFACE_PRESET_JSON, SURFACE_PRESET_MARKER } from "./surfaceBundle";
-import type { PluginHostActorSnapshot } from "./contracts";
+import { buildSurfaceLua, SURFACE_PRESET_JSON, SURFACE_PRESET_MARKER } from "./surfaceBundle";
+import type {
+  ParameterSchema,
+  ParameterValue,
+  ParameterValues,
+  PluginHostActorSnapshot
+} from "./contracts";
 import { decodeDeviceRaw, decodeDirectNumber, mapInspectorToSurface } from "./inspectorMapping";
 import {
   clearCommand,
@@ -69,6 +77,60 @@ const LOG_CAP = 80;
 const MONITOR_CAP = 60;
 const PORT_KEY = "simularca:electra-one:port-override";
 const SLOT_KEY = "simularca:electra-one:target-slot";
+const RENDER_KEY = "simularca:electra-one:render-options";
+const RENDER_SIG_KEY = "simularca:electra-one:provisioned-render-sig";
+
+/** Synthetic actor id for the inspector "test surface". It is never a real
+ *  host actor, so device edits are looped back into a local store instead of
+ *  through the host bridge. */
+export const TEST_ACTOR_ID = "__electra-test-surface__";
+
+/** Four dummy controls so the Electra One round-trip can be exercised with
+ *  no real actor selected: three numbers covering the distinct number cases
+ *  (ranged-with-step → slider, rangeless float, rangeless integer) plus a
+ *  select(list). All four are hardware-editable on the device. */
+export const TEST_SCHEMA: ParameterSchema = {
+  id: "electra-test-surface",
+  title: "Test Surface",
+  params: [
+    {
+      key: "tRanged",
+      label: "Ranged (step)",
+      type: "number",
+      min: 0,
+      max: 100,
+      step: 0.5,
+      precision: 1
+    },
+    {
+      key: "tRangeless",
+      label: "Rangeless",
+      type: "number",
+      step: 0.1,
+      precision: 2
+    },
+    {
+      key: "tInt",
+      label: "Integer",
+      type: "number",
+      step: 1,
+      precision: 0
+    },
+    {
+      key: "tSelect",
+      label: "Test Select",
+      type: "select",
+      options: ["Alpha", "Bravo", "Charlie", "Delta"]
+    }
+  ]
+};
+
+const TEST_DEFAULTS: ParameterValues = {
+  tRanged: 25,
+  tRangeless: 1.23,
+  tInt: 3,
+  tSelect: "Alpha"
+};
 
 export interface SessionDeps {
   open?: (opts: OpenOptions) => Promise<WebMidiHandle>;
@@ -119,11 +181,14 @@ export class ElectraSession {
     device: null,
     onDeviceBundleVersion: null,
     buildBundleVersion: SURFACE_BUNDLE_VERSION,
+    renderOptions: { ...DEFAULT_RENDER_OPTIONS },
+    provisionedRenderSig: null,
     targetSlot: { bank: 2, slot: 0 },
     presetSlot: null,
     overwriteBlocked: null,
     mirroredActor: null,
     focusedSlot: null,
+    testSurface: null,
     lastError: null,
     log: []
   };
@@ -136,6 +201,8 @@ export class ElectraSession {
   // Surface (SSP) state.
   private applyFn: SurfaceApplyFn | null = null;
   private snapshot: PluginHostActorSnapshot | null = null;
+  /** Test-surface param values, or null when the test surface is disabled. */
+  private testParams: ParameterValues | null = null;
   private descriptor: SurfaceDescriptor | null = null;
   private suppressUntil = 0;
   private suppressKey: string | null = null;
@@ -147,6 +214,13 @@ export class ElectraSession {
     this.storage = deps.storage === undefined ? defaultStorage() : deps.storage;
     this.state.portOverride = this.loadJson(PORT_KEY, { input: null, output: null });
     this.state.targetSlot = this.loadJson(SLOT_KEY, { bank: 2, slot: 0 });
+    this.state.renderOptions = this.loadJson(RENDER_KEY, { ...DEFAULT_RENDER_OPTIONS });
+    try {
+      const sig = this.storage?.getItem(RENDER_SIG_KEY);
+      this.state.provisionedRenderSig = sig ? (JSON.parse(sig) as string) : null;
+    } catch {
+      /* ignore */
+    }
   }
 
   getState(): ElectraConnectionState {
@@ -230,6 +304,23 @@ export class ElectraSession {
     this.emit();
   }
 
+  /** Update device-side render detail flags (persisted). Does NOT re-upload —
+   *  the assembled Lua only changes on the next provision(); the inspector
+   *  surfaces an "options changed — provision" hint via provisionedRenderSig. */
+  setRenderOptions(partial: Partial<ElectraRenderOptions>): void {
+    const next = { ...this.state.renderOptions, ...partial };
+    if (renderOptionsSig(next) === renderOptionsSig(this.state.renderOptions)) {
+      return;
+    }
+    this.state.renderOptions = next;
+    this.saveJson(RENDER_KEY, next);
+    this.log(
+      "info",
+      `Render options: caps=${next.roundedCaps ? "on" : "off"} ghost=${next.ghostSegments ? "on" : "off"} (provision to apply on device).`
+    );
+    this.emit();
+  }
+
   async refreshPorts(): Promise<void> {
     try {
       const list = await this.enumerate();
@@ -253,13 +344,70 @@ export class ElectraSession {
   /** Called by the runtime whenever the editor selection / its params change. */
   setSelectedActor(snapshot: PluginHostActorSnapshot | null): void {
     this.snapshot = snapshot;
-    const mirror = snapshot ? { id: snapshot.id, name: snapshot.name } : null;
+    this.syncSurface();
+  }
+
+  /** A real selection always wins; the test surface is only a fallback so it
+   *  never fights an actually-selected actor. */
+  private effectiveSnapshot(): PluginHostActorSnapshot | null {
+    if (this.snapshot) {
+      return this.snapshot;
+    }
+    if (!this.testParams) {
+      return null;
+    }
+    return {
+      id: TEST_ACTOR_ID,
+      name: "Test Surface",
+      actorType: "test",
+      params: this.testParams,
+      schema: TEST_SCHEMA,
+      // Transform omitted so commonFields() contributes nothing — the surface
+      // is exactly the 4 dummy params, no transform/enabled/visibility rows.
+      transform: undefined as unknown as PluginHostActorSnapshot["transform"],
+      enabled: true,
+      visibilityMode: "visible"
+    };
+  }
+
+  /** Re-derive the mirrored actor and reconcile the device from whatever the
+   *  effective (real-or-test) snapshot now is. */
+  private syncSurface(): void {
+    const eff = this.effectiveSnapshot();
+    const mirror = eff ? { id: eff.id, name: eff.name } : null;
     const cur = this.state.mirroredActor;
     if (cur?.id !== mirror?.id || cur?.name !== mirror?.name) {
       this.state.mirroredActor = mirror;
       this.emit();
     }
     this.pushSurface();
+  }
+
+  /** Inspector toggle: enable/disable the synthetic 4-control test surface.
+   *  It only reaches the device while no real actor is selected. */
+  setTestSurface(enabled: boolean): void {
+    if (enabled === (this.testParams !== null)) {
+      return;
+    }
+    this.testParams = enabled ? { ...TEST_DEFAULTS } : null;
+    this.state.testSurface = this.testParams;
+    this.log(
+      "info",
+      enabled ? "Test surface enabled (4 dummy controls)." : "Test surface disabled."
+    );
+    this.emit();
+    this.syncSurface();
+  }
+
+  /** Inspector edit of a test-surface control (host→device round-trip test). */
+  setTestParam(key: string, value: ParameterValue): void {
+    if (!this.testParams || !(key in this.testParams)) {
+      return;
+    }
+    this.testParams = { ...this.testParams, [key]: value };
+    this.state.testSurface = this.testParams;
+    this.emit();
+    this.syncSurface();
   }
 
   private structureSig(d: SurfaceDescriptor): string {
@@ -284,7 +432,7 @@ export class ElectraSession {
     if (!this.handle || this.state.phase !== "ready" || !this.state.presetSlot) {
       return; // not provisioned yet — will push again once ready
     }
-    const next = mapInspectorToSurface(this.snapshot);
+    const next = mapInspectorToSurface(this.effectiveSnapshot());
     if (!next) {
       if (this.descriptor) {
         this.sendSsp(clearCommand());
@@ -343,7 +491,21 @@ export class ElectraSession {
     // SET_FIELD_VALUE straight back (SPEC §8.1).
     this.suppressKey = field.key;
     this.suppressUntil = Date.now() + SURFACE_SUPPRESS_MS;
-    if (!this.applyFn || !this.snapshot) {
+    const eff = this.effectiveSnapshot();
+    if (eff?.id === TEST_ACTOR_ID && this.testParams) {
+      // Self-contained: the test surface has no host actor, so loop the edit
+      // back into the local store and re-push instead of the host bridge.
+      this.testParams = { ...this.testParams, [field.key]: decoded };
+      this.state.testSurface = this.testParams;
+      this.log(
+        "info",
+        `${tag} ${field.label} (${field.key}) -> ${String(decoded)} [test surface]`
+      );
+      this.emit();
+      this.syncSurface();
+      return;
+    }
+    if (!this.applyFn || !eff) {
       this.log(
         "warn",
         `${tag} ${field.label} -> ${String(decoded)}: NOT applied — ${
@@ -353,7 +515,7 @@ export class ElectraSession {
       return;
     }
     this.log("info", `${tag} ${field.label} (${field.key}) -> ${String(decoded)} [applied]`);
-    this.applyFn(this.snapshot.id, field.key, decoded, { history: false });
+    this.applyFn(eff.id, field.key, decoded, { history: false });
   }
 
   private onDeviceValue(idx: number, raw: string): void {
@@ -560,9 +722,13 @@ export class ElectraSession {
       return false;
     }
 
-    this.set("provisioning", "Uploading Lua app…");
+    const opts = this.state.renderOptions;
+    this.set(
+      "provisioning",
+      `Uploading Lua app (caps=${opts.roundedCaps ? "on" : "off"}, ghost=${opts.ghostSegments ? "on" : "off"})…`
+    );
     const luaAck = await this.awaitResponse(
-      () => this.sendMonitored(buildUploadLua(SURFACE_MAIN_LUA)),
+      () => this.sendMonitored(buildUploadLua(buildSurfaceLua(opts))),
       (m) => parseAck(m) !== null,
       ACK_TIMEOUT_MS
     );
@@ -570,6 +736,10 @@ export class ElectraSession {
       this.set("error", luaAck ? "Device rejected the Lua upload (NACK)." : "Lua upload timed out (no ACK).");
       return false;
     }
+
+    // The device now holds the Lua built from these exact options.
+    this.state.provisionedRenderSig = renderOptionsSig(opts);
+    this.saveJson(RENDER_SIG_KEY, this.state.provisionedRenderSig);
 
     // Activate — the device screen now shows the Simularca Surface preset.
     this.sendMonitored(buildSwitchPresetSlot(bank, slot));

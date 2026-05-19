@@ -1,11 +1,16 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type {
   ActorVisibilityMode,
+  NumberParameterDefinition,
+  ParameterDefinition,
+  ParameterValue,
   PluginDefinition,
   PluginInspectorComponentProps,
-  PluginRuntimeComponentProps
+  PluginRuntimeComponentProps,
+  SelectParameterDefinition
 } from "./contracts";
-import { ElectraSession } from "./connectionState";
+import { ElectraSession, TEST_SCHEMA } from "./connectionState";
+import { renderOptionsSig } from "./types";
 import type { ElectraConnectionPhase, ElectraConnectionState } from "./types";
 
 /* The runtime component (always mounted by the host's PluginRuntimeHost) owns
@@ -250,6 +255,257 @@ function ProvisioningCard(props: { session: ElectraSession; state: ElectraConnec
   );
 }
 
+/* The plugin inspector is mounted inside the host DOM, so the host's global
+ * `.widget-*` rules (src/styles.css) apply. Reusing those class names + the
+ * InspectorFieldRow markup makes the test surface render with the same native
+ * controls (label row, toggle switch, select, slider) as real actor params. */
+function WidgetRow(props: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="widget-row widget-row-field">
+      <div className="widget-row-header">
+        <label className="widget-label">{props.label}</label>
+      </div>
+      <div className="widget-row-control-wrap">
+        <div className="widget-row-control">{props.children}</div>
+      </div>
+    </div>
+  );
+}
+
+function NumberControl(props: {
+  def: NumberParameterDefinition;
+  value: number;
+  onChange: (n: number) => void;
+}) {
+  const { def } = props;
+  const hasRange = def.min !== undefined && def.max !== undefined;
+  const numberInput = (
+    <input
+      type="number"
+      className="widget-text"
+      style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}
+      min={def.min}
+      max={def.max}
+      step={def.step}
+      value={props.value}
+      onChange={(e) => props.onChange(Number(e.target.value))}
+    />
+  );
+  if (!hasRange) {
+    return (
+      <div className="widget-number-input-wrap widget-number-input-wrap-fill">
+        {numberInput}
+        {def.unit ? <span className="widget-number-unit">{def.unit}</span> : null}
+      </div>
+    );
+  }
+  const min = def.min as number;
+  const max = def.max as number;
+  const pct = max > min ? ((props.value - min) / (max - min)) * 100 : 0;
+  return (
+    <div className="widget-number">
+      <input
+        className="widget-number-slider"
+        type="range"
+        min={min}
+        max={max}
+        step={def.step ?? 1}
+        value={props.value}
+        style={{ ["--fill" as string]: `${Math.max(0, Math.min(100, pct))}%` }}
+        onChange={(e) => props.onChange(Number(e.target.value))}
+      />
+      <div className="widget-number-input-wrap widget-number-input-wrap-fill">
+        {numberInput}
+        {def.unit ? <span className="widget-number-unit">{def.unit}</span> : null}
+      </div>
+    </div>
+  );
+}
+
+function ToggleControl(props: { checked: boolean; onChange: (b: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      className={`widget-toggle${props.checked ? " on" : ""}`}
+      role="switch"
+      aria-checked={props.checked}
+      title={props.checked ? "On" : "Off"}
+      onClick={() => props.onChange(!props.checked)}
+    >
+      <span className="widget-toggle-track">
+        <span className="widget-toggle-thumb" />
+      </span>
+      <span className="widget-toggle-label">{props.checked ? "On" : "Off"}</span>
+    </button>
+  );
+}
+
+function TestControl(props: {
+  def: ParameterDefinition;
+  value: ParameterValue | undefined;
+  onChange: (v: ParameterValue) => void;
+}) {
+  const { def } = props;
+  if (def.type === "number") {
+    return (
+      <NumberControl
+        def={def as NumberParameterDefinition}
+        value={Number(props.value ?? 0)}
+        onChange={props.onChange}
+      />
+    );
+  }
+  if (def.type === "boolean") {
+    return (
+      <ToggleControl checked={Boolean(props.value)} onChange={props.onChange} />
+    );
+  }
+  if (def.type === "select") {
+    const options = (def as SelectParameterDefinition).options;
+    return (
+      <select
+        className="widget-select"
+        value={String(props.value ?? options[0] ?? "")}
+        onChange={(e) => props.onChange(e.target.value)}
+      >
+        {options.map((o) => (
+          <option key={o} value={o}>
+            {o}
+          </option>
+        ))}
+      </select>
+    );
+  }
+  return (
+    <input
+      className="widget-text"
+      value={String(props.value ?? "")}
+      onChange={(e) => props.onChange(e.target.value)}
+    />
+  );
+}
+
+/**
+ * Synthetic 4-control surface (one per main param type) so the Electra One
+ * round-trip can be tested when no real actor is selected. Always on while the
+ * plugin is selected. Edits here push to the device; edits on the device loop
+ * straight back into these values.
+ */
+function TestSurfaceCard(props: { session: ElectraSession; state: ElectraConnectionState }) {
+  const { session, state } = props;
+  const params = state.testSurface ?? {};
+  return (
+    <div style={cardStyle}>
+      <strong style={{ opacity: 0.8 }}>Test surface</strong>
+      <div style={{ opacity: 0.65, fontSize: 12, margin: "4px 0 8px" }}>
+        Four dummy controls (one per main param type) mirrored to the Electra
+        whenever no real actor is selected. Edit them on the device and watch
+        them change here, or edit here to push to the device. “Test String” is
+        read-only on the device (string params map to a display slot).
+      </div>
+      <div className="custom-inspector" style={{ gap: 8 }}>
+        {TEST_SCHEMA.params.map((def) => (
+          <WidgetRow key={def.key} label={def.label}>
+            <TestControl
+              def={def}
+              value={params[def.key]}
+              onChange={(v) => session.setTestParam(def.key, v)}
+            />
+          </WidgetRow>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Collapsible submenu: device-side render detail toggles + a Provision
+ * button + live device status. Each toggle OMITS code from the uploaded
+ * Lua (assembled host-side) rather than branching on-device — the Mini's
+ * paint loop is the frame-rate bottleneck.
+ */
+function DeviceRenderingCard(props: { session: ElectraSession; state: ElectraConnectionState }) {
+  const { session, state } = props;
+  const opts = state.renderOptions;
+  const curSig = renderOptionsSig(opts);
+  const dirty = state.provisionedRenderSig !== curSig;
+  const busy =
+    state.phase === "provisioning" ||
+    state.phase === "detecting" ||
+    state.phase === "checking-firmware";
+  return (
+    <details style={cardStyle}>
+      <summary style={{ cursor: "pointer", fontWeight: 600, opacity: 0.85 }}>
+        Device rendering &amp; provisioning
+      </summary>
+      <div style={{ opacity: 0.65, fontSize: 12, margin: "6px 0 8px" }}>
+        Turning a detail OFF removes that code from the bundle uploaded to the
+        device (no on-device branch), so the Mini paints faster. Changing a
+        toggle needs a re-provision to take effect.
+      </div>
+      <div className="custom-inspector" style={{ gap: 8 }}>
+        <WidgetRow label="Rounded ends">
+          <ToggleControl
+            checked={opts.roundedCaps}
+            onChange={(v) => session.setRenderOptions({ roundedCaps: v })}
+          />
+        </WidgetRow>
+        <WidgetRow label="Ghost background">
+          <ToggleControl
+            checked={opts.ghostSegments}
+            onChange={(v) => session.setRenderOptions({ ghostSegments: v })}
+          />
+        </WidgetRow>
+      </div>
+      {dirty ? (
+        <div style={{ marginTop: 8, color: "#ffd180", fontSize: 12 }}>
+          Options changed — Provision to rebuild &amp; upload the bundle.
+        </div>
+      ) : null}
+      <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+        <button type="button" disabled={busy} onClick={() => void session.provision()}>
+          Provision
+        </button>
+        <button type="button" disabled={busy} onClick={() => void session.reprovision()}>
+          Re-provision
+        </button>
+      </div>
+      <div style={{ marginTop: 10 }}>
+        <Row label="Phase" value={state.phase} tone={PHASE_TONE[state.phase]} />
+        <Row label="Model" value={state.device?.model ?? "—"} />
+        <Row label="Firmware" value={state.device?.firmware ?? "—"} />
+        <Row
+          label="Bundle (device / build)"
+          value={`${state.onDeviceBundleVersion ?? "—"} / ${state.buildBundleVersion}`}
+          tone={
+            state.onDeviceBundleVersion === state.buildBundleVersion ? "default" : "warning"
+          }
+        />
+        <Row
+          label="Provisioned slot"
+          value={
+            state.presetSlot
+              ? `bank ${state.presetSlot.bank}, slot ${state.presetSlot.slot}`
+              : "—"
+          }
+        />
+        <Row
+          label="Render on device"
+          value={
+            state.provisionedRenderSig
+              ? dirty
+                ? `${state.provisionedRenderSig} (stale, want ${curSig})`
+                : curSig
+              : "not provisioned"
+          }
+          tone={dirty ? "warning" : "default"}
+        />
+        {state.lastError ? <Row label="Last error" value={state.lastError} tone="error" /> : null}
+      </div>
+    </details>
+  );
+}
+
 function DebugTools(props: { session: ElectraSession; state: ElectraConnectionState }) {
   const { session, state } = props;
   const [bank, setBank] = useState(0);
@@ -345,6 +601,10 @@ export function ElectraOneInspector(props: PluginInspectorComponentProps) {
 
   useEffect(() => {
     void session.refreshPorts();
+    // The test surface is always on while the plugin is selected so the
+    // device round-trip works without picking a real actor (idempotent; a
+    // real selected actor still takes precedence in effectiveSnapshot()).
+    session.setTestSurface(true);
   }, [session]);
 
   const selected = props.host.selectedActors;
@@ -381,6 +641,7 @@ export function ElectraOneInspector(props: PluginInspectorComponentProps) {
 
       <PortPicker session={session} state={state} />
       <ProvisioningCard session={session} state={state} />
+      <DeviceRenderingCard session={session} state={state} />
 
       <div style={cardStyle}>
         <Row label="Phase" value={state.phase} tone={PHASE_TONE[state.phase]} />
@@ -414,6 +675,8 @@ export function ElectraOneInspector(props: PluginInspectorComponentProps) {
         />
         {state.lastError ? <Row label="Last error" value={state.lastError} tone="error" /> : null}
       </div>
+
+      <TestSurfaceCard session={session} state={state} />
 
       <DebugTools session={session} state={state} />
 

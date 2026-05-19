@@ -1,3 +1,5 @@
+import type { ParameterValues } from "./contracts";
+
 // Plugin-local types. See SPEC.md for the full design; Phase 1 implements
 // detection + the connection state machine + the inspector status panel.
 // Provisioning (Phase 2) and the Simularca Surface Protocol / digit editor
@@ -39,6 +41,30 @@ export interface ElectraPortOverride {
   output: string | null;
 }
 
+/** Device-side render detail flags. These do NOT branch at runtime on the
+ *  device: `buildSurfaceLua()` assembles a different Lua bundle per option so
+ *  the device only ever runs the minimal code (the Mini's paint loop is the
+ *  bottleneck). Changing these requires re-provisioning. */
+export interface ElectraRenderOptions {
+  /** Rounded "stadium" segment ends (scanline-disc caps). Off = flat
+   *  rectangle segments (far fewer fillRects — the big frame-rate win). */
+  roundedCaps: boolean;
+  /** The black "8" ghost skeleton painted behind every lit digit. Off =
+   *  only lit segments drawn (~halves the per-frame fillRect count). */
+  ghostSegments: boolean;
+}
+
+export const DEFAULT_RENDER_OPTIONS: ElectraRenderOptions = {
+  roundedCaps: true,
+  ghostSegments: true
+};
+
+/** Stable signature of a render-options set, used to tell whether the
+ *  device's provisioned bundle still matches the current options. */
+export function renderOptionsSig(o: ElectraRenderOptions): string {
+  return `r${o.roundedCaps ? 1 : 0}g${o.ghostSegments ? 1 : 0}`;
+}
+
 export interface ElectraConnectionState {
   phase: ElectraConnectionPhase;
   /** Human-readable summary for the inspector status panel. */
@@ -58,6 +84,12 @@ export interface ElectraConnectionState {
   onDeviceBundleVersion: number | null;
   /** Build-time surface bundle version this plugin ships. */
   buildBundleVersion: number;
+  /** Device-side render detail flags (persisted). Applied on next provision. */
+  renderOptions: ElectraRenderOptions;
+  /** renderOptionsSig() captured at the last successful provision, or null if
+   *  never provisioned this session. Drives the "options changed — provision"
+   *  hint when it differs from the current renderOptions. */
+  provisionedRenderSig: string | null;
   /** Where the surface will be / was provisioned (0-based, persisted). */
   targetSlot: { bank: number; slot: number };
   /** Active provisioned preset location once provisioned. */
@@ -69,6 +101,10 @@ export interface ElectraConnectionState {
   mirroredActor: { id: string; name: string } | null;
   /** Absolute field index currently focused on the device, or null. */
   focusedSlot: number | null;
+  /** Current values of the synthetic 4-control "test surface" when the user
+   *  enables it from the inspector (to exercise the device round-trip with no
+   *  real actor selected); null when disabled. */
+  testSurface: ParameterValues | null;
   lastError: string | null;
   /** Rolling diagnostics for the inspector log group (newest last). */
   log: ElectraLogEntry[];
@@ -85,11 +121,11 @@ export interface ElectraLogEntry {
  *  null disables the firmware gate until then. */
 export const MIN_FIRMWARE: string | null = null;
 
-/** Bumped whenever preset.json or any Lua module changes (SPEC §4.1). v16 =
- *  v15 plus: single-touch ownership -- while one dial is held, capacitive
- *  touches on other dials are ignored so an accidental brush cannot steal
- *  focus / move the highlight (rotations remain ungated). */
-export const SURFACE_BUNDLE_VERSION = 16;
+/** Bumped whenever preset.json or any Lua module changes (SPEC §4.1). v17 =
+ *  v16 plus: 7-segment digits redrawn as rounded "stadium" segments (body
+ *  rect + scanline-disc end caps), a 2px gap at the joints, and the unlit
+ *  segments painted as a black ghost "8" behind every lit digit. */
+export const SURFACE_BUNDLE_VERSION = 17;
 
 /** Preset name marker used for cheap discovery on the device (SPEC §4.2). */
 export const SURFACE_PRESET_MARKER = "Simularca Surface";
