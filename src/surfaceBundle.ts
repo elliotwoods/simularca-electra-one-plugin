@@ -366,13 +366,19 @@ function paint()
   graphics.setColor(0x0a0f17)
   graphics.fillRect(0, 0, 800, BANDH)
   drawReadout()
-  -- link lines from the band top edge (just under each digit encoder) down
-  -- to the digit it controls (control-relative coords).
+  -- link lines (control-relative): a 3px vertical stub at the top aligned
+  -- with the rotary control, a diagonal across, then a 3px vertical stub
+  -- aligned with the digit whose bottom sits 2px above the digit top.
   for k = 0, 3 do
     local cx = digitCx[k]
-    if cx ~= nil and DETAIL_CX[k + 1] ~= nil then
+    local ex = DETAIL_CX[k + 1]
+    if cx ~= nil and ex ~= nil then
       graphics.setColor((k == highlightedKnob) and COL_HI or 0x44607f)
-      graphics.drawLine(DETAIL_CX[k + 1], 0, cx, linkTopY)
+      local botY = linkTopY - 2 -- 2px above the digit top
+      local botY0 = botY - 3 -- bottom stub is 3px tall
+      graphics.drawLine(ex, 0, ex, 3) -- top vertical stub (3px)
+      graphics.drawLine(ex, 3, cx, botY0) -- diagonal between the stubs
+      graphics.drawLine(cx, botY0, cx, botY) -- bottom vertical stub (3px)
     end
   end
   -- scrollbar
