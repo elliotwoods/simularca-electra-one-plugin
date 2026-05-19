@@ -82,4 +82,31 @@ describe("decodeDeviceLine", () => {
     expect(decodeDeviceLine("scp hello world")).toEqual({ type: "log", text: "hello world" });
     expect(decodeDeviceLine("unrelated device chatter")).toBeNull();
   });
+
+  it("strips the Electra log millisecond + lua: prefixes", () => {
+    // Real device Log SysEx text: "<ms-from-start> lua: <print output>".
+    expect(decodeDeviceLine("147362 lua: scp vc 4 0.75")).toEqual({
+      type: "value",
+      idx: 4,
+      value: "0.75"
+    });
+    expect(decodeDeviceLine("88 lua: scp dv 1 -3.250")).toEqual({
+      type: "dvalue",
+      idx: 1,
+      value: "-3.250"
+    });
+    expect(decodeDeviceLine("9001 lua: simularca:ready bundle=12")).toEqual({
+      type: "ready",
+      bundle: 12
+    });
+    // ms prefix without the lua: prefix, and lua: without ms — both tolerated.
+    expect(decodeDeviceLine("42 scp focus 2")).toEqual({ type: "focus", idx: 2 });
+    expect(decodeDeviceLine("lua: scp vc 0 127")).toEqual({
+      type: "value",
+      idx: 0,
+      value: "127"
+    });
+    // Generic firmware logger chatter (now streaming once logging is on).
+    expect(decodeDeviceLine("147362 ElectraApp: preset successfully loaded")).toBeNull();
+  });
 });

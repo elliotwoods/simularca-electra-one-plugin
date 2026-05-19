@@ -112,6 +112,29 @@ export function buildExecuteLua(luaCommand: string): number[] {
   return frameElectraSysex([...ELECTRA_CMD.EXECUTE_LUA, ...asciiBytes(luaCommand)]);
 }
 
+/** Electra log destination ports (Electra MIDI impl: `14 7D`). */
+export const ELECTRA_LOG_PORT = { PORT_1: 0x00, PORT_2: 0x01, CTRL: 0x02 } as const;
+
+/**
+ * Enable/disable the device logger (Electra MIDI impl: `7F 7D status 00`).
+ * CRITICAL: the firmware logger is DISABLED by default for performance, and
+ * Lua `print()` output — this plugin's entire device→host SSP channel — is
+ * delivered ONLY as Log SysEx. Without this the device never talks back.
+ */
+export function buildSetLogger(enabled: boolean): number[] {
+  return frameElectraSysex([0x7f, 0x7d, enabled ? 0x01 : 0x00, 0x00]);
+}
+
+/**
+ * Route logs to a port (Electra MIDI impl: `14 7D port reserved`). Control /
+ * SSP traffic uses the CTRL port, so logs must go there for our input
+ * listener to receive them (CTRL is the firmware default; sent explicitly in
+ * case a user changed it).
+ */
+export function buildSetLogPort(port: number): number[] {
+  return frameElectraSysex([0x14, 0x7d, port & 0x7f, 0x00]);
+}
+
 /* ---------------------------------------------------------------- parsers */
 
 function payloadTextAfterCmd(message: readonly number[]): string {

@@ -5,9 +5,12 @@ import {
   buildExecuteLua,
   buildRequestLua,
   buildRequestPreset,
+  buildSetLogPort,
+  buildSetLogger,
   buildSwitchPresetSlot,
   buildUploadLua,
   buildUploadPreset,
+  ELECTRA_LOG_PORT,
   bytesToHex,
   electraMessageKind,
   electraPayload,
@@ -69,6 +72,17 @@ describe("command builders", () => {
     expect(buildRequestPreset()).toEqual([0xf0, 0x00, 0x21, 0x45, 0x02, 0x01, 0xf7]);
     expect(buildRequestLua()).toEqual([0xf0, 0x00, 0x21, 0x45, 0x02, 0x0c, 0xf7]);
     expect(buildExecuteLua("ssp(1)").slice(4, 6)).toEqual([0x08, 0x0d]);
+  });
+
+  it("logger enable/disable is 7F 7D status 00", () => {
+    expect(buildSetLogger(true)).toEqual([0xf0, 0x00, 0x21, 0x45, 0x7f, 0x7d, 0x01, 0x00, 0xf7]);
+    expect(buildSetLogger(false)).toEqual([0xf0, 0x00, 0x21, 0x45, 0x7f, 0x7d, 0x00, 0x00, 0xf7]);
+  });
+
+  it("set-log-port is 14 7D port 00, CTRL = 0x02", () => {
+    expect(buildSetLogPort(ELECTRA_LOG_PORT.CTRL)).toEqual([
+      0xf0, 0x00, 0x21, 0x45, 0x14, 0x7d, 0x02, 0x00, 0xf7
+    ]);
   });
 });
 

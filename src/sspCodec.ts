@@ -140,7 +140,15 @@ export type DeviceEvent =
 
 /** Parse one device `print()` line. Returns null for unrelated log text. */
 export function decodeDeviceLine(line: string): DeviceEvent | null {
-  const t = line.trim();
+  // Electra Log SysEx text is "<ms-from-start> <message>", and print() output
+  // is additionally prefixed "lua:" (Electra docs). Strip both so the terse
+  // SSP grammar below stays anchored. Bare "scp …" lines (the unit tests)
+  // start with a letter, so neither strip touches them.
+  const t = line
+    .trim()
+    .replace(/^\d+\s+/, "")
+    .replace(/^lua:\s*/i, "")
+    .trim();
   let m = /^scp\s+vc\s+(\d+)\s+(.+)$/.exec(t);
   if (m) {
     return { type: "value", idx: Number(m[1]), value: m[2] };

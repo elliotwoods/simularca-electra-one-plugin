@@ -24,9 +24,12 @@ import {
   buildExecuteLua,
   buildRequestLua,
   buildRequestPreset,
+  buildSetLogPort,
+  buildSetLogger,
   buildSwitchPresetSlot,
   buildUploadLua,
   buildUploadPreset,
+  ELECTRA_LOG_PORT,
   bytesToHex,
   hexToBytes,
   isElectraSysex,
@@ -414,16 +417,22 @@ export class ElectraSession {
         const logText = parseLog(bytes);
         if (logText) {
           const ev = decodeDeviceLine(logText);
-          if (ev && ev.type === "value") {
+          if (ev?.type === "value") {
             this.onDeviceValue(ev.idx, ev.value);
-          } else if (ev && ev.type === "dvalue") {
+          } else if (ev?.type === "dvalue") {
             this.onDeviceDirect(ev.idx, ev.value);
-          } else if (ev && ev.type === "focus") {
+          } else if (ev?.type === "focus") {
             this.state.focusedSlot = ev.idx;
             this.log("info", `device: focused field ${ev.idx}`);
-          } else {
-            this.log("info", `device: ${logText}`);
+          } else if (ev?.type === "ready") {
+            this.log("info", `device: surface ready (bundle ${ev.bundle ?? "?"})`);
+          } else if (ev?.type === "log") {
+            this.log("info", `device: ${ev.text}`);
           }
+          // Unrecognised lines are generic firmware logger chatter
+          // (ElectraApp:, preset load, etc.) — now streaming because the
+          // logger is on. Intentionally dropped so the diagnostics panel
+          // stays focused on the SSP conversation.
         }
         this.emit();
       });
@@ -433,6 +442,13 @@ export class ElectraSession {
           void this.start();
         }
       });
+
+      // The firmware logger is OFF by default and Lua print() — the whole
+      // device→host SSP channel — is delivered only as Log SysEx. Enable it
+      // and pin it to the CTRL port we listen on, before anything else.
+      this.sendMonitored(buildSetLogPort(ELECTRA_LOG_PORT.CTRL));
+      this.sendMonitored(buildSetLogger(true));
+      this.log("info", "Enabled device logger on CTRL (required for device→host).");
 
       this.set("checking-firmware", `Connected to ${handle.inputName}. Requesting device info…`);
       const info = await this.awaitResponse(
