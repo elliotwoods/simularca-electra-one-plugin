@@ -85,10 +85,11 @@ export interface ElectraLogEntry {
  *  null disables the firmware gate until then. */
 export const MIN_FIRMWARE: string | null = null;
 
-/** Bumped whenever preset.json or any Lua module changes (SPEC §4.1). v12 =
- *  v11 (discrete toggle/list editing + ON/OFF & enum picker readout) plus
- *  link lines as 6px stub / diagonal / 6px stub, 5px above the digit. */
-export const SURFACE_BUNDLE_VERSION = 12;
+/** Bumped whenever preset.json or any Lua module changes (SPEC §4.1). v16 =
+ *  v15 plus: single-touch ownership -- while one dial is held, capacitive
+ *  touches on other dials are ignored so an accidental brush cannot steal
+ *  focus / move the highlight (rotations remain ungated). */
+export const SURFACE_BUNDLE_VERSION = 16;
 
 /** Preset name marker used for cheap discovery on the device (SPEC §4.2). */
 export const SURFACE_PRESET_MARKER = "Simularca Surface";

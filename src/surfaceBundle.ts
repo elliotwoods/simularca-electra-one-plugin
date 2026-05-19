@@ -108,8 +108,17 @@ local focusedIdx = nil
 local editing = nil
 local lastPot = {}
 local highlightedKnob = nil
+-- The pot that currently owns the capacitive touch. While set, touch
+-- events on any other dial are ignored (an accidental brush must not steal
+-- focus / move the highlight). Cleared on the owner's release.
+local touchOwner = nil
 local digitCx = {}
 local linkTopY = 0
+-- Discrete (toggle/list) rotary sensitivity: accumulate raw encoder delta
+-- and only advance one option per DISC_SENS units (~5x less sensitive than
+-- one-step-per-callback). On-device tunable.
+local DISC_SENS = 5
+local discAccum = {}
 
 local function splitc(s, sep)
   local t = {}
@@ -250,8 +259,7 @@ local function renderRows()
     end
   elseif f.kind == "number" and editing ~= nil then
     for k = 0, 3 do
-      local e = editing.ws - k
-      nameOf(1 + k, "10^" .. tostring(e) .. " = " .. tostring(digitAt(editing.value, e)))
+      nameOf(1 + k, f.label)
     end
   elseif f.kind == "list" and f.opts ~= nil then
     local cur = tonumber(f.value) or 0
@@ -276,6 +284,18 @@ local DETAIL_CX = { ${COLS.map((c) => c + Math.floor(CTRL_W / 2)).join(", ")} }
 local COL_NORMAL = 0x6fd0ff
 local COL_GREY = 0x33455c
 local COL_HI = 0xffffff
+-- Non-selected picker cell fill: the scrollbar-track dark, so the
+-- COL_NORMAL label on top stays readable.
+local COL_CELL_BG = 0x223044
+
+-- Scale a 0xRRGGBB colour's brightness by pct (per channel). Used to dim
+-- the non-touched digits while a digit encoder is held.
+local function dim(rgb, pct)
+  local r = math.floor(math.floor(rgb / 65536) % 256 * pct)
+  local g = math.floor(math.floor(rgb / 256) % 256 * pct)
+  local b = math.floor(rgb % 256 * pct)
+  return r * 65536 + g * 256 + b
+end
 
 -- Draw the focused number as a big adaptive 7-seg "digit window": the 4
 -- knob-controlled places plus the rest of the number; places outside the
@@ -291,7 +311,7 @@ local BANDH = ${BAND_H}
 -- drawDigit precedent). Active cell is filled bright, so its label is drawn
 -- in the background colour (white-on-white guard).
 local function cellRect(x, y, w, h, active)
-  graphics.setColor(active and COL_HI or COL_GREY)
+  graphics.setColor(active and COL_HI or COL_CELL_BG)
   graphics.fillRect(x, y, w, h)
   graphics.setColor(active and COL_HI or COL_NORMAL)
   local bt = 3
@@ -367,8 +387,12 @@ local function drawReadout()
     graphics.print(0, math.floor(BANDH / 2) - 8, "touch a value", 800, CENTER)
     return
   end
-  graphics.setColor(0x9fb4cf)
-  graphics.print(0, 2, f.label, 800, CENTER)
+  -- The variable title is shown on the 4 digit-place knob controls for
+  -- numbers, so the readout heading is only drawn for non-number fields.
+  if not (f.kind == "number" and editing ~= nil) then
+    graphics.setColor(0x9fb4cf)
+    graphics.print(0, 2, f.label, 800, CENTER)
+  end
   if f.kind == "toggle" then
     drawToggle(f)
     return
@@ -413,7 +437,7 @@ local function drawReadout()
   local yTop = areaTop + math.floor((areaH - dh) / 2)
   linkTopY = yTop
   if v < 0 then
-    graphics.setColor(COL_NORMAL)
+    graphics.setColor(highlightedKnob ~= nil and dim(COL_NORMAL, 0.5) or COL_NORMAL)
     drawDigit(x, yTop, dw, dh, dt, "g")
     x = x + dw + gap
   end
@@ -424,11 +448,17 @@ local function drawReadout()
     if e <= editing.ws and e >= editing.ws - 3 then
       knob = editing.ws - e
     end
+    local selected = (knob ~= nil and knob == highlightedKnob)
     local col = COL_NORMAL
-    if knob ~= nil and knob == highlightedKnob then
+    if selected then
       col = COL_HI
     elseif outOfRange then
       col = COL_GREY
+    end
+    -- When a digit encoder is touched, dim every non-touched digit to 50%
+    -- so the selected one stands out.
+    if highlightedKnob ~= nil and not selected then
+      col = dim(col, 0.5)
     end
     graphics.setColor(col)
     drawDigit(x, yTop, dw, dh, dt, SEG[tostring(d)] or "")
@@ -437,7 +467,11 @@ local function drawReadout()
     end
     x = x + dw + gap
     if e == 0 and prec > 0 then
-      graphics.setColor(outOfRange and COL_GREY or COL_NORMAL)
+      local dpc = outOfRange and COL_GREY or COL_NORMAL
+      if highlightedKnob ~= nil then
+        dpc = dim(dpc, 0.5)
+      end
+      graphics.setColor(dpc)
       graphics.fillRect(x, yTop + dh - dt * 2, dt * 2, dt * 2)
       x = x + dt * 2 + gap
     end
@@ -514,6 +548,7 @@ local function focusSlot(abs)
   end
   focusedIdx = abs
   buildEditing(abs)
+  discAccum[abs] = 0
   print("scp focus " .. abs)
   repaint()
 end
@@ -610,37 +645,57 @@ local function numberStep(f)
   return 10 ^ (-(f.prec or 0))
 end
 
--- Shared discrete editor for toggle/list fields. One option per detent (sign
--- of delta). Stores f.value as "0"/"1" (toggle) or the option-INDEX string
--- (list) -- NEVER the raw 0..127 position -- and emits the same scp vc raw
--- decodeDeviceRaw expects (toggle: 0/127; list: index -> 0..127). Returns
--- true if it handled f (so callers know to repaint/recenter).
+-- Shared discrete editor for toggle/list fields. Accumulates raw encoder
+-- delta and advances one option per DISC_SENS units (less sensitive). Index
+-- CLAMPS at both ends -- no wrap, so turning past the last option does not
+-- skip back to the start. Stores f.value as "0"/"1" (toggle) or the
+-- option-INDEX string (list) -- NEVER the raw 0..127 position -- and emits
+-- the same scp vc raw decodeDeviceRaw expects (toggle: 0/127; list: index
+-- -> 0..127). Returns true only when the value actually changed.
 local function stepDiscrete(abs, f, delta)
-  local dir = (delta > 0 and 1) or (delta < 0 and -1) or 0
-  if f.kind == "toggle" then
-    if dir ~= 0 then
-      local on = (f.value ~= "1")
-      f.value = on and "1" or "0"
-      print("scp vc " .. abs .. " " .. (on and 127 or 0))
+  local isToggle = (f.kind == "toggle")
+  local isList = (f.kind == "list" and f.opts ~= nil)
+  if not (isToggle or isList) then
+    return false
+  end
+  local acc = (discAccum[abs] or 0) + delta
+  local steps = 0
+  while acc >= DISC_SENS do
+    steps = steps + 1
+    acc = acc - DISC_SENS
+  end
+  while acc <= -DISC_SENS do
+    steps = steps - 1
+    acc = acc + DISC_SENS
+  end
+  discAccum[abs] = acc
+  if steps == 0 then
+    return false
+  end
+  if isToggle then
+    local cur = ((f.value == "1") and 1 or 0) + steps
+    if cur < 0 then
+      cur = 0
     end
-    return true
-  elseif f.kind == "list" and f.opts ~= nil then
-    if dir ~= 0 then
-      local cur = (tonumber(f.value) or 0) + dir
-      if cur < 0 then
-        cur = 0
-      end
-      if cur > #f.opts - 1 then
-        cur = #f.opts - 1
-      end
-      f.value = tostring(cur)
-      local n = #f.opts
-      local raw = (n > 1) and math.floor(cur / (n - 1) * 127 + 0.5) or 0
-      print("scp vc " .. abs .. " " .. raw)
+    if cur > 1 then
+      cur = 1
     end
+    f.value = (cur == 1) and "1" or "0"
+    print("scp vc " .. abs .. " " .. ((cur == 1) and 127 or 0))
     return true
   end
-  return false
+  local n = #f.opts
+  local cur = (tonumber(f.value) or 0) + steps
+  if cur < 0 then
+    cur = 0
+  end
+  if cur > n - 1 then
+    cur = n - 1
+  end
+  f.value = tostring(cur)
+  local raw = (n > 1) and math.floor(cur / (n - 1) * 127 + 0.5) or 0
+  print("scp vc " .. abs .. " " .. raw)
+  return true
 end
 
 -- bottom row (ids 5-8): the parameter's own encoder directly edits the value
@@ -680,8 +735,10 @@ function valueChanged(valueObject, value)
   end
   if stepDiscrete(abs, f, delta) then
     repaint()
-    recenter(ctrl, id)
   end
+  -- recenter every callback so lastPot resets to 64 and the accumulator
+  -- keeps summing cleanly (endless feel; never pins the fader).
+  recenter(ctrl, id)
 end
 
 -- top row (ids 1-4): detail editor for the focused field
@@ -718,7 +775,21 @@ end
 pcall(function()
   if events ~= nil and events.subscribe ~= nil then
     events.subscribe(POTS)
+    -- A touch "owns" the surface until released: while one dial is held,
+    -- stray capacitive touches on other dials are dropped. Rotations are
+    -- never gated -- only these touch-change events are.
     function events.onPotTouchChange(potId, controlId, touched)
+      if touched then
+        if touchOwner ~= nil and touchOwner ~= potId then
+          return
+        end
+        touchOwner = potId
+      else
+        if touchOwner ~= potId then
+          return
+        end
+        touchOwner = nil
+      end
       if potId >= 5 and potId <= 8 then
         local abs = pageOffset + (potId - 5)
         if touched and slots[abs] ~= nil then
