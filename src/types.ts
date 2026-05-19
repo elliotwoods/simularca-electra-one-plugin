@@ -85,9 +85,10 @@ export interface ElectraLogEntry {
  *  null disables the firmware gate until then. */
 export const MIN_FIRMWARE: string | null = null;
 
-/** Bumped whenever preset.json or any Lua module changes (SPEC §4.1). v10 =
- *  link lines drawn as stub/diagonal/stub (3px verticals + diagonal). */
-export const SURFACE_BUNDLE_VERSION = 10;
+/** Bumped whenever preset.json or any Lua module changes (SPEC §4.1). v12 =
+ *  v11 (discrete toggle/list editing + ON/OFF & enum picker readout) plus
+ *  link lines as 6px stub / diagonal / 6px stub, 5px above the digit. */
+export const SURFACE_BUNDLE_VERSION = 12;
 
 /** Preset name marker used for cheap discovery on the device (SPEC §4.2). */
 export const SURFACE_PRESET_MARKER = "Simularca Surface";

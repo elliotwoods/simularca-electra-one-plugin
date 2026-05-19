@@ -285,6 +285,80 @@ local COL_HI = 0xffffff
 -- the control's own bounds (0,0 = control top-left), not absolute screen.
 -- BAND_H is the control height; everything here is 0..BAND_H.
 local BANDH = ${BAND_H}
+
+-- ---- toggle / enum picker cells ----
+-- No stroke primitive on the device: a border is 4 thin fillRects (the
+-- drawDigit precedent). Active cell is filled bright, so its label is drawn
+-- in the background colour (white-on-white guard).
+local function cellRect(x, y, w, h, active)
+  graphics.setColor(active and COL_HI or COL_GREY)
+  graphics.fillRect(x, y, w, h)
+  graphics.setColor(active and COL_HI or COL_NORMAL)
+  local bt = 3
+  graphics.fillRect(x, y, w, bt)
+  graphics.fillRect(x, y + h - bt, w, bt)
+  graphics.fillRect(x, y, bt, h)
+  graphics.fillRect(x + w - bt, y, bt, h)
+end
+
+local function cellLabel(x, y, w, h, text, active)
+  graphics.setColor(active and 0x0a0f17 or COL_NORMAL)
+  graphics.print(x, y + math.floor(h / 2) - 8, text, w, CENTER)
+end
+
+local function drawToggle(f)
+  local on = (f.value == "1")
+  local areaTop = 40
+  local areaH = (BANDH - 30) - areaTop
+  local GAP = 10
+  local cw = math.floor((760 - GAP) / 2)
+  local ch = math.min(areaH, 84)
+  local cy = areaTop + math.floor((areaH - ch) / 2)
+  local x0 = 20
+  cellRect(x0, cy, cw, ch, not on)
+  cellLabel(x0, cy, cw, ch, "OFF", not on)
+  local x1 = x0 + cw + GAP
+  cellRect(x1, cy, cw, ch, on)
+  cellLabel(x1, cy, cw, ch, "ON", on)
+end
+
+local function drawEnum(f)
+  local n = #f.opts
+  if n <= 0 then
+    graphics.setColor(COL_NORMAL)
+    graphics.print(0, math.floor(BANDH / 2) - 8, fmtValue(f), 800, CENTER)
+    return
+  end
+  local cur = tonumber(f.value) or 0
+  local areaTop = 40
+  local areaH = (BANDH - 30) - areaTop
+  local GAP = 10
+  local cols = (n <= 4) and n or 4
+  local rows = math.floor((n + cols - 1) / cols)
+  local cw = math.floor((760 - (cols - 1) * GAP) / cols)
+  local rh = math.floor((areaH - (rows - 1) * GAP) / rows)
+  if rh > 64 then
+    rh = 64
+  end
+  local gh = rows * rh + (rows - 1) * GAP
+  local gy0 = areaTop + math.floor((areaH - gh) / 2)
+  for oi = 0, n - 1 do
+    local r = math.floor(oi / cols)
+    local c = oi % cols
+    local inRow = n - r * cols
+    if inRow > cols then
+      inRow = cols
+    end
+    local rowW = inRow * cw + (inRow - 1) * GAP
+    local rx0 = math.floor((800 - rowW) / 2)
+    local x = rx0 + c * (cw + GAP)
+    local y = gy0 + r * (rh + GAP)
+    local active = (oi == cur)
+    cellRect(x, y, cw, rh, active)
+    cellLabel(x, y, cw, rh, f.opts[oi + 1] or "", active)
+  end
+end
+
 local function drawReadout()
   digitCx = {}
   local f = focusedIdx ~= nil and slots[focusedIdx] or nil
@@ -295,6 +369,14 @@ local function drawReadout()
   end
   graphics.setColor(0x9fb4cf)
   graphics.print(0, 2, f.label, 800, CENTER)
+  if f.kind == "toggle" then
+    drawToggle(f)
+    return
+  end
+  if f.kind == "list" and f.opts ~= nil then
+    drawEnum(f)
+    return
+  end
   if f.kind ~= "number" or editing == nil then
     graphics.setColor(COL_NORMAL)
     graphics.print(0, math.floor(BANDH / 2) - 8, fmtValue(f), 800, CENTER)
@@ -366,19 +448,19 @@ function paint()
   graphics.setColor(0x0a0f17)
   graphics.fillRect(0, 0, 800, BANDH)
   drawReadout()
-  -- link lines (control-relative): a 3px vertical stub at the top aligned
-  -- with the rotary control, a diagonal across, then a 3px vertical stub
-  -- aligned with the digit whose bottom sits 2px above the digit top.
+  -- link lines (control-relative): a 6px vertical stub at the top aligned
+  -- with the rotary control, a diagonal across, then a 6px vertical stub
+  -- aligned with the digit whose bottom sits 5px above the digit top.
   for k = 0, 3 do
     local cx = digitCx[k]
     local ex = DETAIL_CX[k + 1]
     if cx ~= nil and ex ~= nil then
       graphics.setColor((k == highlightedKnob) and COL_HI or 0x44607f)
-      local botY = linkTopY - 2 -- 2px above the digit top
-      local botY0 = botY - 3 -- bottom stub is 3px tall
-      graphics.drawLine(ex, 0, ex, 3) -- top vertical stub (3px)
-      graphics.drawLine(ex, 3, cx, botY0) -- diagonal between the stubs
-      graphics.drawLine(cx, botY0, cx, botY) -- bottom vertical stub (3px)
+      local botY = linkTopY - 5 -- 5px above the digit top
+      local botY0 = botY - 6 -- bottom stub is 6px tall
+      graphics.drawLine(ex, 0, ex, 6) -- top vertical stub (6px)
+      graphics.drawLine(ex, 6, cx, botY0) -- diagonal between the stubs
+      graphics.drawLine(cx, botY0, cx, botY) -- bottom vertical stub (6px)
     end
   end
   -- scrollbar
@@ -528,6 +610,39 @@ local function numberStep(f)
   return 10 ^ (-(f.prec or 0))
 end
 
+-- Shared discrete editor for toggle/list fields. One option per detent (sign
+-- of delta). Stores f.value as "0"/"1" (toggle) or the option-INDEX string
+-- (list) -- NEVER the raw 0..127 position -- and emits the same scp vc raw
+-- decodeDeviceRaw expects (toggle: 0/127; list: index -> 0..127). Returns
+-- true if it handled f (so callers know to repaint/recenter).
+local function stepDiscrete(abs, f, delta)
+  local dir = (delta > 0 and 1) or (delta < 0 and -1) or 0
+  if f.kind == "toggle" then
+    if dir ~= 0 then
+      local on = (f.value ~= "1")
+      f.value = on and "1" or "0"
+      print("scp vc " .. abs .. " " .. (on and 127 or 0))
+    end
+    return true
+  elseif f.kind == "list" and f.opts ~= nil then
+    if dir ~= 0 then
+      local cur = (tonumber(f.value) or 0) + dir
+      if cur < 0 then
+        cur = 0
+      end
+      if cur > #f.opts - 1 then
+        cur = #f.opts - 1
+      end
+      f.value = tostring(cur)
+      local n = #f.opts
+      local raw = (n > 1) and math.floor(cur / (n - 1) * 127 + 0.5) or 0
+      print("scp vc " .. abs .. " " .. raw)
+    end
+    return true
+  end
+  return false
+end
+
 -- bottom row (ids 5-8): the parameter's own encoder directly edits the value
 -- (scaled). Numbers go via the semantic scp dv path so the host applies the
 -- real value (works even without min/max).
@@ -556,10 +671,17 @@ function valueChanged(valueObject, value)
     recenter(ctrl, id)
     return
   end
-  -- toggle / list: coarse 0..127, host decodeDeviceRaw maps it
-  print("scp vc " .. abs .. " " .. tostring(value))
-  f.value = tostring(value)
-  repaint()
+  -- toggle / list: discrete edit (one option per detent), not raw 0..127
+  local prev = lastPot[id] or value
+  local delta = value - prev
+  lastPot[id] = value
+  if delta == 0 then
+    return
+  end
+  if stepDiscrete(abs, f, delta) then
+    repaint()
+    recenter(ctrl, id)
+  end
 end
 
 -- top row (ids 1-4): detail editor for the focused field
@@ -586,25 +708,7 @@ function detailChanged(valueObject, value)
     f.value = string.format("%." .. tostring(editing.prec) .. "f", editing.value)
     emitDigit()
     repaint()
-  elseif f.kind == "list" and f.opts ~= nil then
-    local cur = (tonumber(f.value) or 0) + delta
-    if cur < 0 then
-      cur = 0
-    end
-    if cur > #f.opts - 1 then
-      cur = #f.opts - 1
-    end
-    f.value = tostring(cur)
-    -- emit a 0..127 position so host decodeDeviceRaw maps back to this option
-    local n = #f.opts
-    local raw = (n > 1) and math.floor(cur / (n - 1) * 127 + 0.5) or 0
-    print("scp vc " .. focusedIdx .. " " .. raw)
-    repaint()
-  elseif f.kind == "toggle" then
-    local on = (f.value ~= "1")
-    f.value = on and "1" or "0"
-    -- host decodeDeviceRaw treats >=64 as true
-    print("scp vc " .. focusedIdx .. " " .. (on and 127 or 0))
+  elseif stepDiscrete(focusedIdx, f, delta) then
     repaint()
   end
   recenter(ctrl, id)

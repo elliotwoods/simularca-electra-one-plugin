@@ -64,8 +64,17 @@ describe("surface bundle", () => {
     for (const n of ['name = "Prev"', 'name = "Next"', 'name = "Zoom-"', 'name = "Zoom+"']) {
       expect(SURFACE_MAIN_LUA).toContain(n);
     }
+    // shared discrete editor + toggle/enum picker rendering are present
+    for (const fn of [
+      "local function stepDiscrete(",
+      "local function drawToggle(",
+      "local function drawEnum("
+    ]) {
+      expect(SURFACE_MAIN_LUA).toContain(fn);
+    }
     // direct-edit semantic path + highlight + greying are present
     expect(SURFACE_MAIN_LUA).toContain("scp dv ");
+    expect(SURFACE_MAIN_LUA).toContain("scp vc ");
     expect(SURFACE_MAIN_LUA).toContain("highlightedKnob");
     expect(SURFACE_MAIN_LUA).not.toContain("pages.display");
     expect(SURFACE_MAIN_LUA).not.toContain("function draw7(");
