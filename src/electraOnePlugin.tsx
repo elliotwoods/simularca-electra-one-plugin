@@ -191,6 +191,30 @@ function ProvisioningCard(props: { session: ElectraSession; state: ElectraConnec
           Provision now
         </button>
       </div>
+      {state.overwriteBlocked ? (
+        <div
+          style={{
+            marginTop: 10,
+            padding: 8,
+            border: "1px solid rgba(255,138,128,0.5)",
+            borderRadius: 6,
+            background: "rgba(255,138,128,0.08)"
+          }}
+        >
+          <div style={{ color: "#ff8a80", fontSize: 12 }}>
+            Bank {state.overwriteBlocked.bank} slot {state.overwriteBlocked.slot} holds the
+            non-Simularca preset “{state.overwriteBlocked.name}”. Forcing will permanently
+            overwrite it on the device.
+          </div>
+          <button
+            type="button"
+            style={{ marginTop: 8, color: "#ff8a80" }}
+            onClick={() => void session.provision(true)}
+          >
+            Force overwrite this slot
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }

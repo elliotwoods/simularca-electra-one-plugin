@@ -176,6 +176,26 @@ describe("provisioning", () => {
     expect(s.getState().phase).toBe("error");
     expect(s.getState().summary).toMatch(/refusing to overwrite/i);
     expect(sentKinds()).not.toContain("UPLOAD_PRESET");
+    expect(s.getState().overwriteBlocked).toEqual({ bank: 2, slot: 0, name: "User Synth" });
+  });
+
+  it("force-overwrites an occupied slot when provision(true)", async () => {
+    const { handle, sentKinds } = makeDevice({
+      deviceInfo: GOOD_INFO,
+      lua: "",
+      preset: { name: "User Synth" },
+      ack: true
+    });
+    const s = makeSession({ handle });
+    await s.start();
+    expect(s.getState().phase).toBe("error");
+
+    const ok = await s.provision(true);
+    expect(ok).toBe(true);
+    expect(s.getState().phase).toBe("ready");
+    expect(sentKinds()).toContain("UPLOAD_PRESET");
+    expect(sentKinds()).toContain("UPLOAD_LUA");
+    expect(s.getState().overwriteBlocked).toBeNull();
   });
 
   it("errors when an upload is not ACKed", async () => {

@@ -62,6 +62,9 @@ export interface ElectraConnectionState {
   targetSlot: { bank: number; slot: number };
   /** Active provisioned preset location once provisioned. */
   presetSlot: { bank: number; slot: number } | null;
+  /** Set when provisioning refused to overwrite a non-Simularca preset —
+   *  drives the inspector "Force overwrite" button. Null otherwise. */
+  overwriteBlocked: { bank: number; slot: number; name: string } | null;
   /** Id/name of the actor currently mirrored to the device, if any. */
   mirroredActor: { id: string; name: string } | null;
   /** Absolute field index currently focused on the device, or null. */

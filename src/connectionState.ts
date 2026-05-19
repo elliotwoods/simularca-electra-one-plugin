@@ -117,6 +117,7 @@ export class ElectraSession {
     buildBundleVersion: SURFACE_BUNDLE_VERSION,
     targetSlot: { bank: 2, slot: 0 },
     presetSlot: null,
+    overwriteBlocked: null,
     mirroredActor: null,
     focusedSlot: null,
     lastError: null,
@@ -219,6 +220,7 @@ export class ElectraSession {
 
   setTargetSlot(bank: number, slot: number): void {
     this.state.targetSlot = { bank: Math.max(0, bank | 0), slot: Math.max(0, slot | 0) };
+    this.state.overwriteBlocked = null;
     this.saveJson(SLOT_KEY, this.state.targetSlot);
     this.log("info", `Target slot set to bank ${this.state.targetSlot.bank} slot ${this.state.targetSlot.slot}.`);
     this.emit();
@@ -361,6 +363,7 @@ export class ElectraSession {
       this.state.device = null;
       this.state.deviceInfoReceived = false;
       this.state.lastError = null;
+      this.state.overwriteBlocked = null;
 
       const support = this.checkSupport();
       if (!support.available) {
@@ -486,13 +489,15 @@ export class ElectraSession {
 
   /**
    * Upload preset + Lua to the target slot and activate it. Refuses to
-   * overwrite a non-Simularca preset (SPEC §4: never clobber a user preset).
+   * overwrite a non-Simularca preset (SPEC §4: never clobber a user preset)
+   * unless `force` is set (the inspector's explicit "Force overwrite" button).
    */
-  async provision(): Promise<boolean> {
+  async provision(force = false): Promise<boolean> {
     if (!this.handle) {
       this.set("error", "Cannot provision: not connected.");
       return false;
     }
+    this.state.overwriteBlocked = null;
     const { bank, slot } = this.state.targetSlot;
     this.set("provisioning", `Inspecting bank ${bank} slot ${slot} before upload…`);
     this.sendMonitored(buildSwitchPresetSlot(bank, slot));
@@ -506,11 +511,15 @@ export class ElectraSession {
     const existing = presetMsg ? parsePresetResponse(presetMsg) : null;
     const existingName = existing && typeof existing.name === "string" ? existing.name : null;
     if (existingName && existingName !== SURFACE_PRESET_MARKER) {
-      this.set(
-        "error",
-        `Bank ${bank} slot ${slot} holds "${existingName}". Refusing to overwrite a non-Simularca preset — pick another target slot in the inspector.`
-      );
-      return false;
+      if (!force) {
+        this.state.overwriteBlocked = { bank, slot, name: existingName };
+        this.set(
+          "error",
+          `Bank ${bank} slot ${slot} holds "${existingName}". Refusing to overwrite a non-Simularca preset — pick another target slot, or use "Force overwrite this slot" in the inspector.`
+        );
+        return false;
+      }
+      this.log("warn", `Force-overwriting "${existingName}" at bank ${bank} slot ${slot}.`);
     }
 
     this.set("provisioning", "Uploading preset…");
