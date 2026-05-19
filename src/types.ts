@@ -47,8 +47,12 @@ export interface ElectraPortOverride {
  *              looking; verticals still cost 1+2*nb fillRects/segment.
  *  - `polygon` a coarse 3-band octagon/hexagon cap stretched along both axes —
  *              a constant 3 fillRects/segment regardless of size: rounded-
- *              looking but nearly as cheap as flat. */
-export type ElectraCapStyle = "flat" | "round" | "polygon";
+ *              looking but nearly as cheap as flat.
+ *  - `triangle` authentic 7-seg/LCD hexagon segments: an exact linear-taper
+ *              point (`hw = r-|o|`) RLE'd like `round`. The linear profile
+ *              barely compresses (nb≈2r+1) so it is the costliest style —
+ *              looks-over-speed. */
+export type ElectraCapStyle = "flat" | "round" | "polygon" | "triangle";
 
 /** Device-side render detail flags. These do NOT branch at runtime on the
  *  device: `buildSurfaceLua()` assembles a different Lua bundle per option so
@@ -63,8 +67,8 @@ export interface ElectraRenderOptions {
 }
 
 export const DEFAULT_RENDER_OPTIONS: ElectraRenderOptions = {
-  capStyle: "round",
-  ghostSegments: true
+  capStyle: "triangle",
+  ghostSegments: false
 };
 
 /** Stable signature of a render-options set, used to tell whether the
@@ -129,14 +133,23 @@ export interface ElectraLogEntry {
  *  null disables the firmware gate until then. */
 export const MIN_FIRMWARE: string | null = null;
 
-/** Bumped whenever preset.json or any Lua module changes (SPEC §4.1). v20 =
+/** Bumped whenever preset.json or any Lua module changes (SPEC §4.1). v21 =
+ *  v20 with the device->host port fix: sspEmit now calls
+ *  `midi.sendSysex(0, t)` instead of `midi.sendSysex(PORT_CTRL, t)`.
+ *  `PORT_CTRL` is not a defined Lua global on fw v4.1.4, so the pcall'd send
+ *  always threw and every device->host message (and the `scp hb …`
+ *  heartbeat) was silently dropped — the long-standing reason device->app
+ *  editing never worked. Hardware-verified via the live probe matrix. v20 =
  *  v19 plus a third cap style: `polygon` — a coarse 3-band octagon/hexagon
  *  cap stretched along BOTH axes, a constant 3 fillRects/segment regardless
  *  of size (round verticals cost 1+2*nb). `round` Lua is byte-identical to
  *  v19. v19 = v18 with the run-length-banded rounded renderer (pixel-
  *  identical to v18, ~2-4x fewer fillRects). v18 = v17 plus device->host off
- *  the firmware logger (self-emitted SSP SysEx) + the `scp hb …` heartbeat. */
-export const SURFACE_BUNDLE_VERSION = 20;
+ *  the firmware logger (self-emitted SSP SysEx) + the `scp hb …` heartbeat.
+ *  v22 = adds the `triangle` cap style (authentic linear-taper hexagon 7-seg;
+ *  reuses round's RLE + polygon's transposed vertical stretch). flat/round/
+ *  polygon Lua unchanged except this version stamp. */
+export const SURFACE_BUNDLE_VERSION = 22;
 
 /** Preset name marker used for cheap discovery on the device (SPEC §4.2). */
 export const SURFACE_PRESET_MARKER = "Simularca Surface";

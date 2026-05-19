@@ -103,8 +103,8 @@ export const SURFACE_PRESET_JSON = JSON.stringify(SURFACE_PRESET);
 // Must stay 7-bit ASCII (uploaded raw over SysEx; asciiBytes() throws otherwise).
 // The bundle is ASSEMBLED per render-options: each disabled detail OMITS its
 // Lua entirely (no on-device `if` branch) so the Mini's paint loop runs the
-// minimal code. Default options (capStyle "round") reproduce the v19
-// run-length-banded renderer byte-for-byte.
+// minimal code. Default options are capStyle "triangle" + ghostSegments off
+// (authentic linear-taper 7-seg, no black "8" skeleton).
 export function buildSurfaceLua(
   opts: ElectraRenderOptions = DEFAULT_RENDER_OPTIONS
 ): string {
@@ -114,6 +114,10 @@ export function buildSurfaceLua(
   // 3-band cap stretched along both axes for a constant 3 fillRects/seg).
   const rounded = opts.capStyle !== "flat";
   const polygon = opts.capStyle === "polygon";
+  // `triangle` reuses the polygon transposed-band-stretch vertical bar: the
+  // diamond profile (hw = r-|o|) is x/y symmetric so the stretch is exact and
+  // cheaper than round's body+2-discs for this profile.
+  const bandStretch = polygon || opts.capStyle === "triangle";
   const ghost = opts.ghostSegments;
   const jointDisc = rounded
     ? `-- px gap held between adjacent segments where they meet at a corner.
@@ -135,7 +139,7 @@ local function drawDisc(bands, cx, cy)
 end
 `
     : "";
-  const vertBar = polygon
+  const vertBar = bandStretch
     ? `    -- Vertical bar (polygon): the octagon profile is x/y symmetric, so
     -- the same bands stretch transposed -- a constant bands.nb fillRects,
     -- no body rect, no per-end disc. Approximate by design.
@@ -264,13 +268,45 @@ local COL_OFF = 0x000000`
     w = { r - c, r, r - c },
     h = { c, 2 * (r - c) + 1, c }
   }`;
+  // Authentic 7-seg/LCD "hexagon" cap: linear-taper half-width (hw = r-|dy|, a
+  // straight 45-deg point), RLE'd with the exact same loop as the round disc --
+  // only the profile formula differs. The linear profile almost never repeats
+  // so nb ~= 2r+1: this is the costliest style, by design (looks over speed).
+  const discPreTri = `  -- Triangle cap: exact linear-taper point (authentic 7-seg hexagon),
+  -- RLE'd like the round disc; linear profile rarely repeats (nb~=2r+1)
+  -- so this is the costliest style. Shared across every cap of every digit.
+  local r = math.max(1, math.floor(dt / 2))
+  local discHW = { nb = 0, o = {}, w = {}, h = {} }
+  do
+    local prof = {}
+    local N = 2 * r + 1
+    for dy = -r, r do
+      prof[dy + r + 1] = r - math.abs(dy)
+    end
+    local i = 1
+    while i <= N do
+      local hw = prof[i]
+      local j = i
+      while j + 1 <= N and prof[j + 1] == hw do
+        j = j + 1
+      end
+      local k = discHW.nb + 1
+      discHW.nb = k
+      discHW.o[k] = i - 1 - r
+      discHW.w[k] = hw
+      discHW.h[k] = j - i + 1
+      i = j + 1
+    end
+  end`;
   const discPre = !rounded
     ? `  -- flat cap style: drawSeg ignores these; kept for arg parity
   local r = 0
   local discHW = nil`
     : polygon
       ? discPrePoly
-      : discPreRound;
+      : opts.capStyle === "triangle"
+        ? discPreTri
+        : discPreRound;
   const ghostMinus = ghost
     ? `    drawDigit(x, yTop, dw, dh, "g", discHW, r, COL_OFF)
 `
@@ -710,21 +746,33 @@ local function repaint()
 end
 
 -- ---- device->host SSP transport ----
--- Self-emitted SysEx -- NO firmware-logger dependency (unlike print()).
--- midi.sendSysex AUTO-FRAMES with F0..F7 and rejects bytes > 0x7F, so the
--- table is the INNER bytes only: prototype manufacturer id 0x7D + magic
--- "SSP" (0x53,0x53,0x50) + the terse ASCII line. The SSP grammar is
--- structurally 7-bit (0x20..0x7E), so every byte is SysEx-legal -- no
--- escaping. Host decodes via parseSspSysex() in electraSysex.ts; the wire
--- form is F0 7D 53 53 50 <ascii> F7. Defined before its first use
--- (focusSlot) -- a local declared later would resolve to a nil global.
+-- Self-emitted SysEx -- NO firmware-logger dependency (unlike print(), which
+-- is dead on fw v4.1.4: the logger never delivers Log SysEx even when the
+-- host enables it).
+-- THE PORT ARG MUST BE THE NUMERIC INDEX 0, *NOT* PORT_CTRL. Hardware-
+-- verified on Electra Mini fw v4.1.4 via the live probe matrix: PORT_CTRL
+-- is NOT a defined global in this firmware Lua env, so the pcall'd
+-- midi.sendSysex(PORT_CTRL, t) threw "attempt to call with a nil value"
+-- and every device->host message was silently dropped -- the entire reason
+-- device->app editing never worked. Port 0 is the host-facing "Electra
+-- Controller" USB port (host listens there). Ports 1/2 and PORT_USB_DEV do
+-- not reach the host.
+-- midi.sendSysex AUTO-FRAMES with F0..F7 (firmware-confirmed) and rejects
+-- bytes > 0x7F, so the table is the INNER bytes only: prototype manufacturer
+-- id 0x7D + magic "SSP" (0x53,0x53,0x50) + the terse ASCII line. The SSP
+-- grammar is structurally 7-bit (0x20..0x7E), so every byte is SysEx-legal --
+-- no escaping. Payloads >=64 chars verified intact. Host decodes via
+-- parseSspSysex() in electraSysex.ts; the wire form is
+-- F0 7D 53 53 50 <ascii> F7. Defined before its first use (focusSlot) -- a
+-- local declared later would resolve to a nil global.
+local SSP_PORT = 0
 local function sspEmit(s)
   local t = { 0x7D, 0x53, 0x53, 0x50 }
   for i = 1, #s do
     t[#t + 1] = string.byte(s, i)
   end
   pcall(function()
-    midi.sendSysex(PORT_CTRL, t)
+    midi.sendSysex(SSP_PORT, t)
     if midi.flush ~= nil then
       midi.flush()
     end
@@ -1083,7 +1131,8 @@ end
 }
 
 /** Default-options build, kept as a const for back-compat (tests + the
- *  device mock). Equals the full v17 renderer. */
+ *  device mock). Tracks DEFAULT_RENDER_OPTIONS (currently triangle caps,
+ *  ghost off). */
 export const SURFACE_MAIN_LUA = buildSurfaceLua(DEFAULT_RENDER_OPTIONS);
 
 export { SURFACE_BUNDLE_VERSION, SURFACE_PRESET_MARKER };

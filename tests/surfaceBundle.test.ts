@@ -96,7 +96,9 @@ describe("buildSurfaceLua render-option variants", () => {
     { capStyle: "flat", ghostSegments: true },
     { capStyle: "flat", ghostSegments: false },
     { capStyle: "polygon", ghostSegments: true },
-    { capStyle: "polygon", ghostSegments: false }
+    { capStyle: "polygon", ghostSegments: false },
+    { capStyle: "triangle", ghostSegments: true },
+    { capStyle: "triangle", ghostSegments: false }
   ] as const;
 
   it("default options reproduce the back-compat SURFACE_MAIN_LUA", () => {
@@ -115,7 +117,7 @@ describe("buildSurfaceLua render-option variants", () => {
     }
   });
 
-  it("flat cap omits the disc/JOINT code; round & polygon include it", () => {
+  it("flat cap omits the disc/JOINT code; round, polygon & triangle include it", () => {
     const round = buildSurfaceLua({ capStyle: "round", ghostSegments: true });
     expect(round).toContain("local function drawDisc(");
     expect(round).toContain("local JOINT = 2");
@@ -127,6 +129,13 @@ describe("buildSurfaceLua render-option variants", () => {
     expect(poly).toContain("Polygon cap: a fixed 3-band octagon");
     expect(poly).toContain("nb = 3");
     expect(poly).not.toContain("math.sqrt(r * r - dy * dy)"); // no per-row loop
+
+    const tri = buildSurfaceLua({ capStyle: "triangle", ghostSegments: true });
+    expect(tri).toContain("local function drawDisc(");
+    expect(tri).toContain("local JOINT = 2");
+    expect(tri).toContain("r - math.abs(dy)"); // linear-taper profile, RLE'd
+    expect(tri).not.toContain("math.sqrt(r * r - dy * dy)"); // not the disc
+    expect(tri).not.toContain("Polygon cap: a fixed 3-band octagon"); // not polygon
 
     const flat = buildSurfaceLua({ capStyle: "flat", ghostSegments: true });
     expect(flat).not.toContain("local function drawDisc(");

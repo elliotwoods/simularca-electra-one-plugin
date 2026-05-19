@@ -82,7 +82,7 @@ const SLOT_KEY = "simularca:electra-one:target-slot";
 const RENDER_KEY = "simularca:electra-one:render-options";
 const RENDER_SIG_KEY = "simularca:electra-one:provisioned-render-sig";
 
-const CAP_STYLES: ElectraCapStyle[] = ["flat", "round", "polygon"];
+const CAP_STYLES: ElectraCapStyle[] = ["flat", "round", "polygon", "triangle"];
 
 /** Normalise persisted render options to the current shape. Pre-v20 stored a
  *  `roundedCaps` boolean instead of `capStyle`; map true→round, false→flat. */

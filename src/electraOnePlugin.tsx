@@ -49,9 +49,15 @@ export function ElectraOneRuntime(props: PluginRuntimeComponentProps) {
   useEffect(() => {
     const session = getSession();
     void session.start();
+    // Dev/hardware-debug handle: the session is a module singleton not
+    // otherwise reachable from the live debug bridge's renderer eval. This
+    // lets `debug-session.mjs renderer --eval` drive sendRawSysex and read
+    // back midiMonitor for on-device protocol probing.
+    (window as unknown as { __electraSession?: ElectraSession }).__electraSession = session;
     return () => {
       session.dispose();
       sharedSession = null;
+      delete (window as unknown as { __electraSession?: ElectraSession }).__electraSession;
     };
   }, []);
 
@@ -455,6 +461,7 @@ function DeviceRenderingCard(props: { session: ElectraSession; state: ElectraCon
             <option value="flat">Flat (fastest, square ends)</option>
             <option value="round">Round (best looking, slower)</option>
             <option value="polygon">Polygon (rounded, ~as fast as flat)</option>
+            <option value="triangle">Triangle (authentic 7-seg, slowest)</option>
           </select>
         </WidgetRow>
         <WidgetRow label="Ghost background">
