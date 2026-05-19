@@ -23,7 +23,8 @@ import {
   parseDeviceInfoResponse,
   parseLog,
   parseLuaResponse,
-  parsePresetResponse
+  parsePresetResponse,
+  parseSspSysex
 } from "../src/electraSysex";
 
 function jsonSysex(cmd: number[], obj: unknown): number[] {
@@ -142,5 +143,44 @@ describe("misc helpers", () => {
   it("electraPayload", () => {
     expect(electraPayload(frameElectraSysex([1, 2, 3]))).toEqual([1, 2, 3]);
     expect(electraPayload([0x90])).toEqual([]);
+  });
+});
+
+describe("parseSspSysex (self-emitted device→host channel)", () => {
+  const primary = (s: string) => [0xf0, 0x7d, 0x53, 0x53, 0x50, ...asciiBytes(s), 0xf7];
+  const fallback = (s: string) =>
+    [0xf0, 0x00, 0x21, 0x45, 0x7d, 0x53, ...asciiBytes(s), 0xf7];
+
+  it("round-trips the primary framing (F0 7D 53 53 50 … F7)", () => {
+    expect(parseSspSysex(primary("scp vc 1 127"))).toBe("scp vc 1 127");
+    expect(parseSspSysex(primary("scp hb vc 64"))).toBe("scp hb vc 64");
+    expect(parseSspSysex(primary(""))).toBe(""); // minimal 6-byte frame
+  });
+
+  it("round-trips the fallback framing (F0 00 21 45 7D 53 … F7)", () => {
+    expect(parseSspSysex(fallback("scp dv 2 -3.50"))).toBe("scp dv 2 -3.50");
+    expect(parseSspSysex(fallback("simularca:ready bundle=18"))).toBe(
+      "simularca:ready bundle=18"
+    );
+  });
+
+  it("rejects firmware frames and non-SysEx → null", () => {
+    expect(parseSspSysex(frameElectraSysex([0x7f, 0x00, ...asciiBytes("123 lua: scp vc 1 5")]))).toBeNull(); // LOG
+    expect(parseSspSysex(frameElectraSysex([0x7e, 0x01, 0, 0]))).toBeNull(); // ACK
+    expect(parseSspSysex(jsonSysex([0x01, 0x7f], { model: "x" }))).toBeNull(); // device info
+    expect(parseSspSysex([0xf0, 0xf7])).toBeNull(); // too short
+    expect(parseSspSysex([0x90, 0x40, 0x7f])).toBeNull(); // not SysEx
+    expect(parseSspSysex([0xf0, 0x7d, 0x53, 0x53, 0x50, 0x41])).toBeNull(); // no F7 terminator
+  });
+
+  it("does not shadow any firmware-response parser", () => {
+    for (const frame of [primary("scp vc 0 1"), fallback("scp vc 0 1")]) {
+      expect(parseAck(frame)).toBeNull();
+      expect(parseLuaResponse(frame)).toBeNull();
+      expect(parsePresetResponse(frame)).toBeNull();
+      expect(parseLog(frame)).toBeNull();
+    }
+    expect(isElectraSysex(primary("x"))).toBe(false); // not Electra mfr id
+    expect(electraMessageKind(fallback("x"))).toBe("unknown"); // op pair 7D 53 unclaimed
   });
 });

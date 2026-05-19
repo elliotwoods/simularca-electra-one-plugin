@@ -11,6 +11,7 @@ import {
   type ElectraConnectionPhase,
   type ElectraConnectionState,
   type ElectraLogEntry,
+  type ElectraCapStyle,
   type ElectraPortOverride,
   type ElectraRenderOptions
 } from "./types";
@@ -41,6 +42,7 @@ import {
   parseBundleVersion,
   parseDeviceInfoResponse,
   parseLog,
+  parseSspSysex,
   parseLuaResponse,
   parsePresetResponse
 } from "./electraSysex";
@@ -79,6 +81,29 @@ const PORT_KEY = "simularca:electra-one:port-override";
 const SLOT_KEY = "simularca:electra-one:target-slot";
 const RENDER_KEY = "simularca:electra-one:render-options";
 const RENDER_SIG_KEY = "simularca:electra-one:provisioned-render-sig";
+
+const CAP_STYLES: ElectraCapStyle[] = ["flat", "round", "polygon"];
+
+/** Normalise persisted render options to the current shape. Pre-v20 stored a
+ *  `roundedCaps` boolean instead of `capStyle`; map true→round, false→flat. */
+function migrateRenderOptions(raw: Record<string, unknown>): ElectraRenderOptions {
+  let capStyle = raw.capStyle as ElectraCapStyle | undefined;
+  if (!capStyle || !CAP_STYLES.includes(capStyle)) {
+    capStyle =
+      typeof raw.roundedCaps === "boolean"
+        ? raw.roundedCaps
+          ? "round"
+          : "flat"
+        : DEFAULT_RENDER_OPTIONS.capStyle;
+  }
+  return {
+    capStyle,
+    ghostSegments:
+      typeof raw.ghostSegments === "boolean"
+        ? raw.ghostSegments
+        : DEFAULT_RENDER_OPTIONS.ghostSegments
+  };
+}
 
 /** Synthetic actor id for the inspector "test surface". It is never a real
  *  host actor, so device edits are looped back into a local store instead of
@@ -214,7 +239,9 @@ export class ElectraSession {
     this.storage = deps.storage === undefined ? defaultStorage() : deps.storage;
     this.state.portOverride = this.loadJson(PORT_KEY, { input: null, output: null });
     this.state.targetSlot = this.loadJson(SLOT_KEY, { bank: 2, slot: 0 });
-    this.state.renderOptions = this.loadJson(RENDER_KEY, { ...DEFAULT_RENDER_OPTIONS });
+    this.state.renderOptions = migrateRenderOptions(
+      this.loadJson<Record<string, unknown>>(RENDER_KEY, {})
+    );
     try {
       const sig = this.storage?.getItem(RENDER_SIG_KEY);
       this.state.provisionedRenderSig = sig ? (JSON.parse(sig) as string) : null;
@@ -316,7 +343,7 @@ export class ElectraSession {
     this.saveJson(RENDER_KEY, next);
     this.log(
       "info",
-      `Render options: caps=${next.roundedCaps ? "on" : "off"} ghost=${next.ghostSegments ? "on" : "off"} (provision to apply on device).`
+      `Render options: caps=${next.capStyle} ghost=${next.ghostSegments ? "on" : "off"} (provision to apply on device).`
     );
     this.emit();
   }
@@ -527,6 +554,30 @@ export class ElectraSession {
     this.applyDeviceEdit("digit edit", idx, (field) => decodeDirectNumber(field, raw));
   }
 
+  /**
+   * Decode one device SSP line (from the self-emitted SSP SysEx, or the
+   * legacy logger Log SysEx fallback) and dispatch it. `scp hb …` heartbeats
+   * fall through decodeDeviceLine to a `log` event — surfaced, never applied.
+   */
+  private handleDeviceLine(text: string): void {
+    const ev = decodeDeviceLine(text);
+    if (ev?.type === "value") {
+      this.onDeviceValue(ev.idx, ev.value);
+    } else if (ev?.type === "dvalue") {
+      this.onDeviceDirect(ev.idx, ev.value);
+    } else if (ev?.type === "focus") {
+      this.state.focusedSlot = ev.idx;
+      this.log("info", `device: focused field ${ev.idx}`);
+    } else if (ev?.type === "ready") {
+      this.log("info", `device: surface ready (bundle ${ev.bundle ?? "?"})`);
+    } else if (ev?.type === "log") {
+      this.log("info", `device: ${ev.text}`);
+    }
+    // Unrecognised lines are generic firmware logger chatter (ElectraApp:,
+    // preset load, etc.) when the diagnostics logger is on — dropped so the
+    // panel stays focused on the SSP conversation.
+  }
+
   /* ----------------------------------------------------------- lifecycle */
 
   async start(): Promise<void> {
@@ -573,28 +624,20 @@ export class ElectraSession {
         outputs: handle.ports.outputs.map((p) => p.name)
       };
 
-      // Persistent inbound monitor + device LOG/ACK surfacing.
+      // Persistent inbound monitor + device SSP surfacing. Device→host is the
+      // self-emitted SSP SysEx (parseSspSysex), logger-independent; the logger
+      // Log SysEx is a kept fallback. The two byte patterns are disjoint, so
+      // at most one dispatch per message.
       handle.onMessage((bytes) => {
         this.monitor("in", bytes);
-        const logText = parseLog(bytes);
-        if (logText) {
-          const ev = decodeDeviceLine(logText);
-          if (ev?.type === "value") {
-            this.onDeviceValue(ev.idx, ev.value);
-          } else if (ev?.type === "dvalue") {
-            this.onDeviceDirect(ev.idx, ev.value);
-          } else if (ev?.type === "focus") {
-            this.state.focusedSlot = ev.idx;
-            this.log("info", `device: focused field ${ev.idx}`);
-          } else if (ev?.type === "ready") {
-            this.log("info", `device: surface ready (bundle ${ev.bundle ?? "?"})`);
-          } else if (ev?.type === "log") {
-            this.log("info", `device: ${ev.text}`);
+        const ssp = parseSspSysex(bytes);
+        if (ssp !== null) {
+          this.handleDeviceLine(ssp);
+        } else {
+          const logText = parseLog(bytes);
+          if (logText) {
+            this.handleDeviceLine(logText);
           }
-          // Unrecognised lines are generic firmware logger chatter
-          // (ElectraApp:, preset load, etc.) — now streaming because the
-          // logger is on. Intentionally dropped so the diagnostics panel
-          // stays focused on the SSP conversation.
         }
         this.emit();
       });
@@ -605,12 +648,13 @@ export class ElectraSession {
         }
       });
 
-      // The firmware logger is OFF by default and Lua print() — the whole
-      // device→host SSP channel — is delivered only as Log SysEx. Enable it
-      // and pin it to the CTRL port we listen on, before anything else.
+      // Diagnostics only — device→host now uses the self-emitted SSP SysEx
+      // (parseSspSysex), which works with the firmware logger OFF. We still
+      // enable it (pinned to the CTRL port) so firmware chatter and the
+      // legacy Log-SysEx fallback stay visible while iterating.
       this.sendMonitored(buildSetLogPort(ELECTRA_LOG_PORT.CTRL));
       this.sendMonitored(buildSetLogger(true));
-      this.log("info", "Enabled device logger on CTRL (required for device→host).");
+      this.log("info", "Enabled device logger on CTRL (diagnostics only; device→host uses SSP SysEx).");
 
       this.set("checking-firmware", `Connected to ${handle.inputName}. Requesting device info…`);
       const info = await this.awaitResponse(
@@ -667,6 +711,9 @@ export class ElectraSession {
 
     if (onDevice === SURFACE_BUNDLE_VERSION) {
       this.state.presetSlot = { bank, slot };
+      // The device may have been power-cycled (empty Lua state) since we last
+      // pushed; force a full re-push so the surface is restored on reconnect.
+      this.descriptor = null;
       this.set(
         "ready",
         `Surface already provisioned (v${onDevice}) at bank ${bank} slot ${slot}. Device is live.`
@@ -725,7 +772,7 @@ export class ElectraSession {
     const opts = this.state.renderOptions;
     this.set(
       "provisioning",
-      `Uploading Lua app (caps=${opts.roundedCaps ? "on" : "off"}, ghost=${opts.ghostSegments ? "on" : "off"})…`
+      `Uploading Lua app (caps=${opts.capStyle}, ghost=${opts.ghostSegments ? "on" : "off"})…`
     );
     const luaAck = await this.awaitResponse(
       () => this.sendMonitored(buildUploadLua(buildSurfaceLua(opts))),
@@ -753,6 +800,11 @@ export class ElectraSession {
     );
     const ver = verifyMsg ? parseBundleVersion(parseLuaResponse(verifyMsg) ?? "") : null;
     this.state.onDeviceBundleVersion = ver;
+    // The device just reloaded a freshly-uploaded preset, so its Lua state is
+    // empty (slots = {}). Drop our cached descriptor so the ready-triggered
+    // pushSurface() re-sends a full SET_ACTOR — the (test) surface appears on
+    // the device immediately after provisioning, not on the next selection.
+    this.descriptor = null;
     this.set(
       "ready",
       `Provisioned to bank ${bank} slot ${slot}. Device shows "Simularca v${ver ?? "?"}".`

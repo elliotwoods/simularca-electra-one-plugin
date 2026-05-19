@@ -91,11 +91,13 @@ describe("surface bundle", () => {
 
 describe("buildSurfaceLua render-option variants", () => {
   const VARIANTS = [
-    { roundedCaps: true, ghostSegments: true },
-    { roundedCaps: true, ghostSegments: false },
-    { roundedCaps: false, ghostSegments: true },
-    { roundedCaps: false, ghostSegments: false }
-  ];
+    { capStyle: "round", ghostSegments: true },
+    { capStyle: "round", ghostSegments: false },
+    { capStyle: "flat", ghostSegments: true },
+    { capStyle: "flat", ghostSegments: false },
+    { capStyle: "polygon", ghostSegments: true },
+    { capStyle: "polygon", ghostSegments: false }
+  ] as const;
 
   it("default options reproduce the back-compat SURFACE_MAIN_LUA", () => {
     expect(buildSurfaceLua(DEFAULT_RENDER_OPTIONS)).toBe(SURFACE_MAIN_LUA);
@@ -113,24 +115,32 @@ describe("buildSurfaceLua render-option variants", () => {
     }
   });
 
-  it("roundedCaps OFF omits the disc/JOINT code; ON includes it", () => {
-    const on = buildSurfaceLua({ roundedCaps: true, ghostSegments: true });
-    expect(on).toContain("local function drawDisc(");
-    expect(on).toContain("local JOINT = 2");
+  it("flat cap omits the disc/JOINT code; round & polygon include it", () => {
+    const round = buildSurfaceLua({ capStyle: "round", ghostSegments: true });
+    expect(round).toContain("local function drawDisc(");
+    expect(round).toContain("local JOINT = 2");
+    expect(round).toContain("math.sqrt(r * r - dy * dy)"); // exact disc RLE
 
-    const off = buildSurfaceLua({ roundedCaps: false, ghostSegments: true });
-    expect(off).not.toContain("local function drawDisc(");
-    expect(off).not.toContain("local JOINT = 2");
-    expect(off).not.toContain("drawDisc(discHW");
-    expect(off).toContain("Flat rectangle segments");
+    const poly = buildSurfaceLua({ capStyle: "polygon", ghostSegments: true });
+    expect(poly).toContain("local function drawDisc(");
+    expect(poly).toContain("local JOINT = 2");
+    expect(poly).toContain("Polygon cap: a fixed 3-band octagon");
+    expect(poly).toContain("nb = 3");
+    expect(poly).not.toContain("math.sqrt(r * r - dy * dy)"); // no per-row loop
+
+    const flat = buildSurfaceLua({ capStyle: "flat", ghostSegments: true });
+    expect(flat).not.toContain("local function drawDisc(");
+    expect(flat).not.toContain("local JOINT = 2");
+    expect(flat).not.toContain("drawDisc(discHW");
+    expect(flat).toContain("Flat rectangle segments");
   });
 
   it("ghostSegments OFF omits COL_OFF and the off-pass; ON includes them", () => {
-    const on = buildSurfaceLua({ roundedCaps: true, ghostSegments: true });
+    const on = buildSurfaceLua({ capStyle: "round", ghostSegments: true });
     expect(on).toContain("local COL_OFF = 0x000000");
     expect(on).toContain(', "abcdefg", discHW, r, COL_OFF)');
 
-    const off = buildSurfaceLua({ roundedCaps: true, ghostSegments: false });
+    const off = buildSurfaceLua({ capStyle: "round", ghostSegments: false });
     expect(off).not.toContain("local COL_OFF =");
     expect(off).not.toContain("COL_OFF)");
   });

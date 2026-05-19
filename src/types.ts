@@ -41,28 +41,36 @@ export interface ElectraPortOverride {
   output: string | null;
 }
 
+/** 7-segment end-cap rendering style (frame-rate vs. looks trade-off):
+ *  - `flat`    one fillRect per lit segment — fewest device calls, square ends.
+ *  - `round`   exact scanline-disc "stadium" caps (run-length-banded). Best
+ *              looking; verticals still cost 1+2*nb fillRects/segment.
+ *  - `polygon` a coarse 3-band octagon/hexagon cap stretched along both axes —
+ *              a constant 3 fillRects/segment regardless of size: rounded-
+ *              looking but nearly as cheap as flat. */
+export type ElectraCapStyle = "flat" | "round" | "polygon";
+
 /** Device-side render detail flags. These do NOT branch at runtime on the
  *  device: `buildSurfaceLua()` assembles a different Lua bundle per option so
  *  the device only ever runs the minimal code (the Mini's paint loop is the
  *  bottleneck). Changing these requires re-provisioning. */
 export interface ElectraRenderOptions {
-  /** Rounded "stadium" segment ends (scanline-disc caps). Off = flat
-   *  rectangle segments (far fewer fillRects — the big frame-rate win). */
-  roundedCaps: boolean;
+  /** End-cap style (see ElectraCapStyle). */
+  capStyle: ElectraCapStyle;
   /** The black "8" ghost skeleton painted behind every lit digit. Off =
    *  only lit segments drawn (~halves the per-frame fillRect count). */
   ghostSegments: boolean;
 }
 
 export const DEFAULT_RENDER_OPTIONS: ElectraRenderOptions = {
-  roundedCaps: true,
+  capStyle: "round",
   ghostSegments: true
 };
 
 /** Stable signature of a render-options set, used to tell whether the
  *  device's provisioned bundle still matches the current options. */
 export function renderOptionsSig(o: ElectraRenderOptions): string {
-  return `r${o.roundedCaps ? 1 : 0}g${o.ghostSegments ? 1 : 0}`;
+  return `c${o.capStyle[0]}g${o.ghostSegments ? 1 : 0}`;
 }
 
 export interface ElectraConnectionState {
@@ -121,11 +129,14 @@ export interface ElectraLogEntry {
  *  null disables the firmware gate until then. */
 export const MIN_FIRMWARE: string | null = null;
 
-/** Bumped whenever preset.json or any Lua module changes (SPEC §4.1). v17 =
- *  v16 plus: 7-segment digits redrawn as rounded "stadium" segments (body
- *  rect + scanline-disc end caps), a 2px gap at the joints, and the unlit
- *  segments painted as a black ghost "8" behind every lit digit. */
-export const SURFACE_BUNDLE_VERSION = 17;
+/** Bumped whenever preset.json or any Lua module changes (SPEC §4.1). v20 =
+ *  v19 plus a third cap style: `polygon` — a coarse 3-band octagon/hexagon
+ *  cap stretched along BOTH axes, a constant 3 fillRects/segment regardless
+ *  of size (round verticals cost 1+2*nb). `round` Lua is byte-identical to
+ *  v19. v19 = v18 with the run-length-banded rounded renderer (pixel-
+ *  identical to v18, ~2-4x fewer fillRects). v18 = v17 plus device->host off
+ *  the firmware logger (self-emitted SSP SysEx) + the `scp hb …` heartbeat. */
+export const SURFACE_BUNDLE_VERSION = 20;
 
 /** Preset name marker used for cheap discovery on the device (SPEC §4.2). */
 export const SURFACE_PRESET_MARKER = "Simularca Surface";

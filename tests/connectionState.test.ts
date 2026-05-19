@@ -343,6 +343,44 @@ describe("surface (SSP)", () => {
     expect(body).toBe('ssp("C")');
   });
 
+  // Self-emitted SSP SysEx (the logger-independent device→host channel).
+  const sspFrame = (s: string) => [0xf0, 0x7d, 0x53, 0x53, 0x50, ...asciiBytes(s), 0xf7];
+
+  it("applies device edits delivered as self-emitted SSP SysEx", async () => {
+    const dev = makeDevice({ deviceInfo: GOOD_INFO, lua: SURFACE_MAIN_LUA });
+    const s = makeSession({ handle: dev.handle });
+    const applied: unknown[] = [];
+    s.setApply((id, k, v, o) => applied.push([id, k, v, o]));
+    await s.start();
+    s.setSelectedActor(SNAP);
+
+    dev.emit(sspFrame("scp vc 1 127"));
+    await new Promise((r) => setTimeout(r));
+    expect(applied.at(-1)).toEqual(["a1", "size", 10, { history: false }]);
+
+    dev.emit(sspFrame("scp dv 1 99"));
+    await new Promise((r) => setTimeout(r));
+    expect(applied.at(-1)).toEqual(["a1", "size", 10, { history: false }]); // clamped to max
+
+    dev.emit(sspFrame("scp focus 1"));
+    await new Promise((r) => setTimeout(r));
+    expect(s.getState().focusedSlot).toBe(1);
+  });
+
+  it("surfaces the scp hb heartbeat without applying it", async () => {
+    const dev = makeDevice({ deviceInfo: GOOD_INFO, lua: SURFACE_MAIN_LUA });
+    const s = makeSession({ handle: dev.handle });
+    const applied: unknown[] = [];
+    s.setApply((id, k, v, o) => applied.push([id, k, v, o]));
+    await s.start();
+    s.setSelectedActor(SNAP);
+
+    dev.emit(sspFrame("scp hb vc 64"));
+    await new Promise((r) => setTimeout(r));
+    expect(s.getState().log.some((e) => e.message === "device: hb vc 64")).toBe(true);
+    expect(applied).toEqual([]); // a heartbeat is never an edit
+  });
+
   it("CLEARs when selection goes away", async () => {
     const dev = makeDevice({ deviceInfo: GOOD_INFO, lua: SURFACE_MAIN_LUA });
     const s = makeSession({ handle: dev.handle });

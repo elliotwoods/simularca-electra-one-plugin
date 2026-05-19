@@ -5,9 +5,12 @@
 //   7-bit (no JSON dependency on the device). Field/record separators are the
 //   ASCII unit/record separators (0x1F / 0x1E) — control chars are 7-bit and
 //   are stripped from sanitised labels/values so they never collide.
-// Device → host: the Lua app `print()`s lines (Electra wraps print() in a Log
-//   SysEx `7F 00`, already received by ElectraSession). Lines are
-//   `scp <verb> <args…>`.
+// Device → host: the Lua app self-emits each `scp <verb> <args…>` line as a
+//   SysEx via `midi.sendSysex` — wire form `F0 7D 53 53 50 <ascii> F7`
+//   (parsed by parseSspSysex in electraSysex.ts). This does NOT depend on the
+//   firmware logger. Legacy path: the same lines also arrive as logger Log
+//   SysEx (`7F 00`, `<ms> lua:`-prefixed) when the logger is enabled — kept
+//   as a fallback; decodeDeviceLine tolerates both prefixed and bare lines.
 
 export type SurfaceSlotKind = "toggle" | "number" | "list" | "readonly";
 

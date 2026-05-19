@@ -228,6 +228,42 @@ export function parseLog(message: readonly number[]): string | null {
   return payloadTextAfterCmd(message);
 }
 
+/**
+ * Self-emitted device→host SSP SysEx — the logger-INDEPENDENT channel. The
+ * Lua app sends each `scp …` line via `midi.sendSysex`; the firmware
+ * auto-frames it F0..F7. Two accepted framings:
+ *   primary:  F0 7D 53 53 50 <ascii> F7    (prototype mfr id 0x7D + "SSP")
+ *   fallback: F0 00 21 45 7D 53 <ascii> F7 (Electra mfr id + op pair 7D 53,
+ *             which collides with no ELECTRA_CMD pair)
+ * Returns the ASCII payload (no F0/F7), or null when not an SSP frame. By
+ * construction disjoint from isElectraSysex / electraMessageKind / parseLog,
+ * so it never shadows a firmware response.
+ */
+export function parseSspSysex(message: readonly number[]): string | null {
+  const n = message.length;
+  if (n < 6 || message[0] !== SYSEX_START || message[n - 1] !== SYSEX_END) {
+    return null;
+  }
+  if (
+    message[1] === 0x7d &&
+    message[2] === 0x53 &&
+    message[3] === 0x53 &&
+    message[4] === 0x50
+  ) {
+    return String.fromCharCode(...message.slice(5, n - 1));
+  }
+  if (
+    message[1] === ELECTRA_MANUFACTURER[0] &&
+    message[2] === ELECTRA_MANUFACTURER[1] &&
+    message[3] === ELECTRA_MANUFACTURER[2] &&
+    message[4] === 0x7d &&
+    message[5] === 0x53
+  ) {
+    return String.fromCharCode(...message.slice(6, n - 1));
+  }
+  return null;
+}
+
 /** Extract `local BUNDLE_VERSION = <n>` from a Lua source string. */
 export function parseBundleVersion(luaSource: string): number | null {
   const m = /BUNDLE_VERSION\s*=\s*(\d+)/.exec(luaSource);

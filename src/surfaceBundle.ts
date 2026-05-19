@@ -103,11 +103,17 @@ export const SURFACE_PRESET_JSON = JSON.stringify(SURFACE_PRESET);
 // Must stay 7-bit ASCII (uploaded raw over SysEx; asciiBytes() throws otherwise).
 // The bundle is ASSEMBLED per render-options: each disabled detail OMITS its
 // Lua entirely (no on-device `if` branch) so the Mini's paint loop runs the
-// minimal code. Default options reproduce the full v17 renderer byte-for-byte.
+// minimal code. Default options (capStyle "round") reproduce the v19
+// run-length-banded renderer byte-for-byte.
 export function buildSurfaceLua(
   opts: ElectraRenderOptions = DEFAULT_RENDER_OPTIONS
 ): string {
-  const rounded = opts.roundedCaps;
+  // `flat` = square ends; `round`/`polygon` both emit JOINT + the band
+  // machinery, differing only in how discPre builds the bands and how a
+  // vertical bar is drawn (round = exact body+2 discs; polygon = a coarse
+  // 3-band cap stretched along both axes for a constant 3 fillRects/seg).
+  const rounded = opts.capStyle !== "flat";
+  const polygon = opts.capStyle === "polygon";
   const ghost = opts.ghostSegments;
   const jointDisc = rounded
     ? `-- px gap held between adjacent segments where they meet at a corner.
@@ -115,23 +121,44 @@ export function buildSurfaceLua(
 -- declared after the function would resolve to a nil global instead).
 local JOINT = 2
 
--- Filled disc via horizontal scanlines (the device has no circle/stroke
--- primitive). discHW is the half-width-per-row profile for radius r,
--- precomputed once per frame (r is frame-constant) and shared by every cap.
-local function drawDisc(discHW, r, cx, cy)
-  for dy = -r, r do
-    local hw = discHW[dy + r + 1]
-    graphics.fillRect(cx - hw, cy + dy, 2 * hw + 1, 1)
+-- The device has no circle/stroke primitive, so caps are scanlines -- but
+-- the half-width profile is reduced ONCE per frame (see discPre) to a few
+-- constant-width bands: bands.o[k]/w[k]/h[k] = {offset from centre, half
+-- width, run length}, bands.nb of them. round = the exact disc RLE; polygon
+-- = a coarse 3-band octagon. drawDisc paints a standalone cap (collapsed
+-- segment) as bands.nb fillRects instead of 2r+1.
+local function drawDisc(bands, cx, cy)
+  for k = 1, bands.nb do
+    local hw = bands.w[k]
+    graphics.fillRect(cx - hw, cy + bands.o[k], 2 * hw + 1, bands.h[k])
   end
 end
 `
     : "";
+  const vertBar = polygon
+    ? `    -- Vertical bar (polygon): the octagon profile is x/y symmetric, so
+    -- the same bands stretch transposed -- a constant bands.nb fillRects,
+    -- no body rect, no per-end disc. Approximate by design.
+    local span = bcy - tcy
+    for k = 1, bands.nb do
+      local hw = bands.w[k]
+      graphics.fillRect(xc + bands.o[k], tcy - hw, bands.h[k], span + 2 * hw + 1)
+    end`
+    : `    -- Vertical bar (round): body rect + a band-RLE disc at each end. The
+    -- bands losslessly merge the v18 horizontal scanlines, so this is pixel-
+    -- identical to the old body+2-discs, just far fewer fillRect calls.
+    graphics.fillRect(xc - r, tcy, 2 * r + 1, bcy - tcy)
+    drawDisc(bands, xc, tcy)
+    drawDisc(bands, xc, bcy)`;
   const drawSegBody = rounded
-    ? `-- One "stadium" segment: a body rect of thickness 2r between two cap
--- centres, plus a round cap at each end. Endpoints are inset by r+JOINT
--- from the digit corner so perpendicular neighbours stand ~JOINT px apart.
--- If the body collapses (tiny digit), a single centred disc is drawn.
-local function drawSeg(seg, x, y, w, h, discHW, r)
+    ? `-- One "stadium"/octagon segment: the cap bar between two end centres,
+-- painted as the cap profile's bands STRETCHED along the segment axis. The
+-- body + both caps become one set of ~bands.nb fillRects (no separate body
+-- rect, no doubled cap overdraw). round bands are the exact disc RLE
+-- (horizontal pixel-identical to v18); polygon bands are a coarse octagon.
+-- Endpoints are inset by r+JOINT from the digit corner so perpendicular
+-- neighbours stand ~JOINT px apart. Collapsed bar -> a single cap.
+local function drawSeg(seg, x, y, w, h, bands, r)
   local h2 = math.floor(h / 2)
   local J = JOINT
   local xl = x + r
@@ -144,11 +171,13 @@ local function drawSeg(seg, x, y, w, h, discHW, r)
     local lcx = xl + r + J
     local rcx = xr - r - J
     if rcx - lcx > 0 then
-      graphics.fillRect(lcx, yc - r, rcx - lcx, 2 * r + 1)
-      drawDisc(discHW, r, lcx, yc)
-      drawDisc(discHW, r, rcx, yc)
+      local span = rcx - lcx
+      for k = 1, bands.nb do
+        local hw = bands.w[k]
+        graphics.fillRect(lcx - hw, yc + bands.o[k], span + 2 * hw + 1, bands.h[k])
+      end
     else
-      drawDisc(discHW, r, math.floor((xl + xr) / 2), yc)
+      drawDisc(bands, math.floor((xl + xr) / 2), yc)
     end
     return
   end
@@ -165,15 +194,13 @@ local function drawSeg(seg, x, y, w, h, discHW, r)
   local tcy = yA + r + J
   local bcy = yB - r - J
   if bcy - tcy > 0 then
-    graphics.fillRect(xc - r, tcy, 2 * r + 1, bcy - tcy)
-    drawDisc(discHW, r, xc, tcy)
-    drawDisc(discHW, r, xc, bcy)
+${vertBar}
   else
-    drawDisc(discHW, r, xc, math.floor((yA + yB) / 2))
+    drawDisc(bands, xc, math.floor((yA + yB) / 2))
   end
 end`
-    : `-- Flat rectangle segments (rounded caps disabled): one fillRect per
--- lit segment, no disc caps -- far fewer draw calls = faster device paint.
+    : `-- Flat rectangle segments (flat cap style): one fillRect per lit
+-- segment, no disc caps -- the fewest draw calls = fastest device paint.
 -- discHW/r are accepted but unused (drawDigit's signature is constant).
 local function drawSeg(seg, x, y, w, h, discHW, r)
   local h2 = math.floor(h / 2)
@@ -198,17 +225,52 @@ end`;
     ? `-- Unlit ("ghost") 7-seg: a full black "8" painted behind every lit digit.
 local COL_OFF = 0x000000`
     : `-- (ghost off-segments disabled: COL_OFF and the off-pass are not emitted)`;
-  const discPre = rounded
-    ? `  -- Cap radius is frame-constant (dt is): build the scanline-disc profile
-  -- once and share it across every cap of every digit (off + lit passes).
+  const discPreRound = `  -- Cap radius is frame-constant (dt is): build the scanline-disc profile
+  -- once, then run-length-encode equal-width rows into a few bands so a
+  -- whole rounded segment is ~discHW.nb fillRects (was 1 + 2*(2r+1)).
+  -- Shared across every cap of every digit (ghost + lit passes).
   local r = math.max(1, math.floor(dt / 2))
-  local discHW = {}
-  for dy = -r, r do
-    discHW[dy + r + 1] = math.floor(math.sqrt(r * r - dy * dy) + 0.5)
-  end`
-    : `  -- rounded caps disabled: drawSeg ignores these; kept for arg parity
+  local discHW = { nb = 0, o = {}, w = {}, h = {} }
+  do
+    local prof = {}
+    local N = 2 * r + 1
+    for dy = -r, r do
+      prof[dy + r + 1] = math.floor(math.sqrt(r * r - dy * dy) + 0.5)
+    end
+    local i = 1
+    while i <= N do
+      local hw = prof[i]
+      local j = i
+      while j + 1 <= N and prof[j + 1] == hw do
+        j = j + 1
+      end
+      local k = discHW.nb + 1
+      discHW.nb = k
+      discHW.o[k] = i - 1 - r
+      discHW.w[k] = hw
+      discHW.h[k] = j - i + 1
+      i = j + 1
+    end
+  end`;
+  // Coarse 3-band octagon: full-width middle, a chamfered slab top & bottom
+  // (chamfer depth c ~= r/2). Always exactly 3 bands -> a constant 3
+  // fillRects/segment via the stretched-both-axes drawSeg. h sums to 2r+1.
+  const discPrePoly = `  -- Polygon cap: a fixed 3-band octagon (no per-row sqrt loop, no RLE).
+  local r = math.max(1, math.floor(dt / 2))
+  local c = math.max(1, math.floor(r / 2))
+  local discHW = {
+    nb = 3,
+    o = { -r, -r + c, r - c + 1 },
+    w = { r - c, r, r - c },
+    h = { c, 2 * (r - c) + 1, c }
+  }`;
+  const discPre = !rounded
+    ? `  -- flat cap style: drawSeg ignores these; kept for arg parity
   local r = 0
-  local discHW = nil`;
+  local discHW = nil`
+    : polygon
+      ? discPrePoly
+      : discPreRound;
   const ghostMinus = ghost
     ? `    drawDigit(x, yTop, dw, dh, "g", discHW, r, COL_OFF)
 `
@@ -217,7 +279,7 @@ local COL_OFF = 0x000000`
     ? `    drawDigit(x, yTop, dw, dh, "abcdefg", discHW, r, COL_OFF)
 `
     : "";
-  return `-- Simularca Surface - generated bundle (split-row, v${SURFACE_BUNDLE_VERSION}, caps=${rounded ? "on" : "off"}, ghost=${ghost ? "on" : "off"})
+  return `-- Simularca Surface - generated bundle (split-row, v${SURFACE_BUNDLE_VERSION}, caps=${opts.capStyle}, ghost=${ghost ? "on" : "off"})
 local BUNDLE_VERSION = ${SURFACE_BUNDLE_VERSION}
 local US = string.char(31)
 local RS = string.char(30)
@@ -647,6 +709,28 @@ local function repaint()
   renderRows()
 end
 
+-- ---- device->host SSP transport ----
+-- Self-emitted SysEx -- NO firmware-logger dependency (unlike print()).
+-- midi.sendSysex AUTO-FRAMES with F0..F7 and rejects bytes > 0x7F, so the
+-- table is the INNER bytes only: prototype manufacturer id 0x7D + magic
+-- "SSP" (0x53,0x53,0x50) + the terse ASCII line. The SSP grammar is
+-- structurally 7-bit (0x20..0x7E), so every byte is SysEx-legal -- no
+-- escaping. Host decodes via parseSspSysex() in electraSysex.ts; the wire
+-- form is F0 7D 53 53 50 <ascii> F7. Defined before its first use
+-- (focusSlot) -- a local declared later would resolve to a nil global.
+local function sspEmit(s)
+  local t = { 0x7D, 0x53, 0x53, 0x50 }
+  for i = 1, #s do
+    t[#t + 1] = string.byte(s, i)
+  end
+  pcall(function()
+    midi.sendSysex(PORT_CTRL, t)
+    if midi.flush ~= nil then
+      midi.flush()
+    end
+  end)
+end
+
 -- ---- focus / editing ----
 local function buildEditing(abs)
   local f = slots[abs]
@@ -667,12 +751,12 @@ local function focusSlot(abs)
   focusedIdx = abs
   buildEditing(abs)
   discAccum[abs] = 0
-  print("scp focus " .. abs)
+  sspEmit("scp focus " .. abs)
   repaint()
 end
 
 local function emitDigit()
-  print("scp dv " .. focusedIdx .. " " .. string.format("%." .. tostring(editing.prec) .. "f", editing.value))
+  sspEmit("scp dv " .. focusedIdx .. " " .. string.format("%." .. tostring(editing.prec) .. "f", editing.value))
 end
 
 local function recenter(ctrl, pot)
@@ -799,7 +883,7 @@ local function stepDiscrete(abs, f, delta)
       cur = 1
     end
     f.value = (cur == 1) and "1" or "0"
-    print("scp vc " .. abs .. " " .. ((cur == 1) and 127 or 0))
+    sspEmit("scp vc " .. abs .. " " .. ((cur == 1) and 127 or 0))
     return true
   end
   local n = #f.opts
@@ -812,7 +896,7 @@ local function stepDiscrete(abs, f, delta)
   end
   f.value = tostring(cur)
   local raw = (n > 1) and math.floor(cur / (n - 1) * 127 + 0.5) or 0
-  print("scp vc " .. abs .. " " .. raw)
+  sspEmit("scp vc " .. abs .. " " .. raw)
   return true
 end
 
@@ -820,6 +904,7 @@ end
 -- (scaled). Numbers go via the semantic scp dv path so the host applies the
 -- real value (works even without min/max).
 function valueChanged(valueObject, value)
+  sspEmit("scp hb vc " .. tostring(value)) -- unconditional: proves the firmware invoked the handler
   local id, ctrl = potOf(valueObject, 5)
   local abs = pageOffset + (id - 5)
   local f = slots[abs]
@@ -839,7 +924,7 @@ function valueChanged(valueObject, value)
     if focusedIdx == abs and editing ~= nil then
       editing.value = nv
     end
-    print("scp dv " .. abs .. " " .. f.value)
+    sspEmit("scp dv " .. abs .. " " .. f.value)
     repaint()
     recenter(ctrl, id)
     return
@@ -861,6 +946,7 @@ end
 
 -- top row (ids 1-4): detail editor for the focused field
 function detailChanged(valueObject, value)
+  sspEmit("scp hb dc " .. tostring(value)) -- unconditional: proves the firmware invoked the handler
   local id, ctrl = potOf(valueObject, 1)
   local knob = id - 1
   if focusedIdx == nil then
@@ -987,11 +1073,11 @@ end
 
 function preset.onReady()
   registerPaint()
-  print("simularca:ready bundle=" .. BUNDLE_VERSION)
+  sspEmit("simularca:ready bundle=" .. BUNDLE_VERSION)
 end
 
 function preset.onEnter()
-  print("simularca:ready bundle=" .. BUNDLE_VERSION)
+  sspEmit("simularca:ready bundle=" .. BUNDLE_VERSION)
 end
 `;
 }

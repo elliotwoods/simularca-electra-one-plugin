@@ -11,7 +11,7 @@ import type {
 } from "./contracts";
 import { ElectraSession, TEST_SCHEMA } from "./connectionState";
 import { renderOptionsSig } from "./types";
-import type { ElectraConnectionPhase, ElectraConnectionState } from "./types";
+import type { ElectraCapStyle, ElectraConnectionPhase, ElectraConnectionState } from "./types";
 
 /* The runtime component (always mounted by the host's PluginRuntimeHost) owns
  * the session lifecycle. The inspector (mounted only when the plugin entity is
@@ -444,11 +444,18 @@ function DeviceRenderingCard(props: { session: ElectraSession; state: ElectraCon
         toggle needs a re-provision to take effect.
       </div>
       <div className="custom-inspector" style={{ gap: 8 }}>
-        <WidgetRow label="Rounded ends">
-          <ToggleControl
-            checked={opts.roundedCaps}
-            onChange={(v) => session.setRenderOptions({ roundedCaps: v })}
-          />
+        <WidgetRow label="End-cap style">
+          <select
+            className="widget-select"
+            value={opts.capStyle}
+            onChange={(e) =>
+              session.setRenderOptions({ capStyle: e.target.value as ElectraCapStyle })
+            }
+          >
+            <option value="flat">Flat (fastest, square ends)</option>
+            <option value="round">Round (best looking, slower)</option>
+            <option value="polygon">Polygon (rounded, ~as fast as flat)</option>
+          </select>
         </WidgetRow>
         <WidgetRow label="Ghost background">
           <ToggleControl
