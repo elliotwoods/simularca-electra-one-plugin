@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type {
+  ActorVisibilityMode,
   PluginDefinition,
   PluginInspectorComponentProps,
   PluginRuntimeComponentProps
@@ -51,14 +52,44 @@ export function ElectraOneRuntime(props: PluginRuntimeComponentProps) {
 
   const host = props.host;
   useEffect(() => {
-    sharedSession?.setApply((actorId, key, value, opts) =>
-      host.updateActorParams(actorId, { [key]: value }, opts)
-    );
+    // Synthetic "@"-prefixed keys (from inspectorMapping.commonFields) route
+    // to the transform / enabled / visibility bridge methods; everything else
+    // is a normal descriptor param.
+    sharedSession?.setApply((actorId, key, value, opts) => {
+      if (key === "@enabled") {
+        host.updateActorEnabled(actorId, Boolean(value));
+        return;
+      }
+      if (key === "@visibility") {
+        host.updateActorVisibility(actorId, String(value) as ActorVisibilityMode);
+        return;
+      }
+      const m = /^@(pos|rot|scl)\.([0-2])$/.exec(key);
+      if (m) {
+        const tKey = m[1] === "pos" ? "position" : m[1] === "rot" ? "rotation" : "scale";
+        const axis = Number(m[2]);
+        const actor = host.selectedActors.find((a) => a.id === actorId);
+        if (!actor) {
+          return;
+        }
+        const src = actor.transform[tKey];
+        const next: [number, number, number] = [src[0], src[1], src[2]];
+        next[axis] = tKey === "rotation" ? (Number(value) * Math.PI) / 180 : Number(value);
+        host.updateActorTransform(actorId, tKey, next, opts);
+        return;
+      }
+      host.updateActorParams(actorId, { [key]: value }, opts);
+    });
   }, [host]);
 
   const sel = props.host.selectedActors[0] ?? null;
-  // Signature covers params + schema so value/visibleWhen changes resync.
-  const sig = sel ? `${sel.id}|${sel.schema?.id ?? ""}|${JSON.stringify(sel.params)}` : "";
+  // Signature covers params + schema + transform/enabled/visibility so any of
+  // them changing (incl. externally) re-pushes the surface.
+  const sig = sel
+    ? `${sel.id}|${sel.schema?.id ?? ""}|${JSON.stringify(sel.params)}|${JSON.stringify(
+        sel.transform
+      )}|${sel.enabled}|${sel.visibilityMode}`
+    : "";
   useEffect(() => {
     sharedSession?.setSelectedActor(sel);
     // eslint-disable-next-line react-hooks/exhaustive-deps

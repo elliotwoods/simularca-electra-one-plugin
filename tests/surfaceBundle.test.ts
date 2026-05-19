@@ -47,21 +47,28 @@ describe("surface bundle", () => {
     expect(custom[0].inputs).toBeUndefined(); // not encoder-bound
   });
 
-  it("Lua has the split-row + paging + 7-seg functions, not the old DRILL ones", () => {
+  it("Lua has the split-row + paging + readout functions, not the old ones", () => {
     for (const fn of [
       "function valueChanged(",
       "function detailChanged(",
       "function pagePrev(",
       "function pageNext(",
-      "function draw7(",
+      "function zoomOut(",
+      "function zoomIn(",
+      "function drawReadout(",
       "function paint(",
       "preset.userFunctions"
     ]) {
       expect(SURFACE_MAIN_LUA).toContain(fn);
     }
-    expect(SURFACE_MAIN_LUA).toContain('name = "Prev"');
-    expect(SURFACE_MAIN_LUA).toContain('name = "Next"');
+    for (const n of ['name = "Prev"', 'name = "Next"', 'name = "Zoom-"', 'name = "Zoom+"']) {
+      expect(SURFACE_MAIN_LUA).toContain(n);
+    }
+    // direct-edit semantic path + highlight + greying are present
+    expect(SURFACE_MAIN_LUA).toContain("scp dv ");
+    expect(SURFACE_MAIN_LUA).toContain("highlightedKnob");
     expect(SURFACE_MAIN_LUA).not.toContain("pages.display");
+    expect(SURFACE_MAIN_LUA).not.toContain("function draw7(");
     expect(SURFACE_MAIN_LUA).not.toContain("function drillKnob(");
     expect(SURFACE_MAIN_LUA).not.toContain("function slotChanged(");
   });

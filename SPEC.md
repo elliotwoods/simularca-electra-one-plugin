@@ -377,6 +377,22 @@ never overwrite. Long labels → device-side shortening. Firmware <
   "Edit" user-function. `digits.ts` math reused unchanged. Host tracks
   `focusedSlot`. Device-side layout / 7-seg scale / fader-vs-custom
   coexistence remain on-device tuning points.
+- **Phase 4.2 — Readout/value-sync refinements (current, bundle v8).** The
+  value encoder now **directly edits the value** (scaled, semantic `scp dv`
+  path) — this also fixes "values don't update in Simularca" (numbers no
+  longer go through the lossy raw-0..127 path). Zoom moved off the value
+  encoder to **Zoom-/Zoom+ user-functions**. The readout is a larger adaptive
+  7-seg digit window: places outside the value's significant range are
+  **greyed zeros**, the touched digit is **highlighted** (digit-encoder touch
+  is now handled), and **link lines** join each top encoder to the digit it
+  controls. Readout band + value row moved up ~1.5×strip to clear
+  MENU/CONTEXT. The "common" controls (**Enabled, Visibility, Pos/Rot/Scale
+  XYZ**) are surfaced as the first fields via a host-bridge extension
+  (`PluginHostActorSnapshot.transform/enabled/visibilityMode` +
+  `updateActorTransform/Enabled/Visibility`); `@`-keyed synthetic fields are
+  routed by the runtime apply-dispatcher to the matching bridge method
+  (rotation deg↔rad). The text label stays small (Electra fixed system font —
+  not enlargeable; only the custom 7-seg scales).
 - **Phase 5 — Vectors + enums.** Vector renderer + per-channel digit editing;
   enum/select option-list drill-down with in-place `SET_FIELD_META` refresh.
 - **Phase 6 — Polish.** Section-aware page breaks; Back/Prev/Next; knob-touch

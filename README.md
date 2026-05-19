@@ -22,12 +22,15 @@ it), and the **Simularca Surface Protocol** (bidirectional, loop-suppressed).
 The device is a **single split-row surface**: the **bottom row** (encoders
 5–8) shows up to 4 parameter **values**; **touch** a value to focus it
 (persists) and the **top row** (encoders 1–4) becomes its **detail editor** —
-for a number, the 4 place-value digits (carry/borrow), with the focused
-value's own bottom encoder panning the digit window (zoom); for a select, an
-option browser. A centre **custom-graphics** band shows the focused value as a
-large **7-segment** readout plus a **scrollbar**; **Prev/Next** user-functions
-(Preset Menu, or assign to a hardware button/knob in device Settings) page
-through actors with more than 4 fields. No separate DRILL page, no
+for a number, the 4 place-value digits (carry/borrow); for a select, an option
+browser. The value encoder **directly edits the value** (scaled). A centre
+**custom-graphics** band shows the focused value as a large adaptive
+**7-segment** readout — places outside the value's range are greyed, the
+touched digit is highlighted, and **link lines** join each top encoder to its
+digit — plus a **scrollbar**. **Prev/Next** and **Zoom-/Zoom+** user-functions
+(Preset Menu, or assign to a hardware button/knob in device Settings) page /
+pan. The actor's **Enabled, Visibility, Position, Rotation, Scale** are the
+first fields (via a host-bridge extension). No separate DRILL page, no
 encoder-push needed. The host/protocol/`digits` math is fully unit-tested; the
 device-side Lua layout/7-seg scale is tuned on hardware. See `SPEC.md §11`.
 

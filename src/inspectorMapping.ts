@@ -91,15 +91,82 @@ function mapField(def: ParameterDefinition, params: ParameterValues): Mapped | n
  * is nothing to show (no selection / no schema / no mappable fields) — the
  * caller then sends CLEAR.
  */
+/** Visibility modes, in the order shown to the device list control. */
+export const VISIBILITY_MODES = ["visible", "hidden", "selected"] as const;
+const RAD_TO_DEG = 180 / Math.PI;
+
+/**
+ * The "common" inspector controls (transform / enabled / visibility) live on
+ * `actor.transform|enabled|visibilityMode`, not in `params`. Synthesize them
+ * as the FIRST fields (so they are the device's first page). Keys are
+ * `@`-prefixed so the runtime apply-dispatcher routes them to the right host
+ * bridge method instead of `updateActorParams`.
+ */
+function commonFields(snapshot: PluginHostActorSnapshot): SurfaceField[] {
+  const t = snapshot.transform;
+  if (!t) {
+    return [];
+  }
+  const num = (
+    key: string,
+    label: string,
+    value: number,
+    step: number,
+    precision: number
+  ): SurfaceField => ({
+    key,
+    idx: 0,
+    kind: "number",
+    label,
+    value: value.toFixed(precision),
+    step,
+    precision
+  });
+  const axes = ["X", "Y", "Z"] as const;
+  const fields: SurfaceField[] = [
+    {
+      key: "@enabled",
+      idx: 0,
+      kind: "toggle",
+      label: "Enabled",
+      value: snapshot.enabled ? "1" : "0"
+    },
+    {
+      key: "@visibility",
+      idx: 0,
+      kind: "list",
+      label: "Visibility",
+      value: String(Math.max(0, VISIBILITY_MODES.indexOf(snapshot.visibilityMode))),
+      options: [...VISIBILITY_MODES]
+    }
+  ];
+  for (let i = 0; i < 3; i += 1) {
+    fields.push(num(`@pos.${i}`, `Pos ${axes[i]}`, t.position[i], 0.001, 3));
+  }
+  for (let i = 0; i < 3; i += 1) {
+    fields.push(num(`@rot.${i}`, `Rot ${axes[i]}`, t.rotation[i] * RAD_TO_DEG, 1, 1));
+  }
+  for (let i = 0; i < 3; i += 1) {
+    fields.push(num(`@scl.${i}`, `Scl ${axes[i]}`, t.scale[i], 0.001, 3));
+  }
+  return fields;
+}
+
 export function mapInspectorToSurface(
   snapshot: PluginHostActorSnapshot | null,
   maxSlots = MAX_FIELDS
 ): SurfaceDescriptor | null {
-  if (!snapshot || !snapshot.schema) {
+  if (!snapshot) {
     return null;
   }
   const fields: SurfaceField[] = [];
-  for (const def of snapshot.schema.params) {
+  for (const cf of commonFields(snapshot)) {
+    if (fields.length >= maxSlots) {
+      break;
+    }
+    fields.push({ ...cf, idx: fields.length });
+  }
+  for (const def of snapshot.schema?.params ?? []) {
     if (fields.length >= maxSlots) {
       break;
     }

@@ -87,6 +87,42 @@ describe("mapInspectorToSurface", () => {
     expect(mapInspectorToSurface(snap({}, defs))?.fields).toHaveLength(12);
     expect(mapInspectorToSurface(snap({}, defs), 3)?.fields).toHaveLength(3);
   });
+
+  it("prepends transform/enabled/visibility (@-keyed) before params", () => {
+    const withTransform: PluginHostActorSnapshot = {
+      ...snap({ amp: 2 }, [{ key: "amp", label: "Amp", type: "number" }]),
+      transform: {
+        position: [1, 2, 3],
+        rotation: [Math.PI, 0, 0],
+        scale: [1, 1, 1]
+      },
+      enabled: true,
+      visibilityMode: "hidden"
+    };
+    const desc = mapInspectorToSurface(withTransform);
+    const keys = desc?.fields.map((f) => f.key);
+    expect(keys?.slice(0, 11)).toEqual([
+      "@enabled",
+      "@visibility",
+      "@pos.0",
+      "@pos.1",
+      "@pos.2",
+      "@rot.0",
+      "@rot.1",
+      "@rot.2",
+      "@scl.0",
+      "@scl.1",
+      "@scl.2"
+    ]);
+    expect(keys?.[11]).toBe("amp");
+    const enabled = desc?.fields[0];
+    expect(enabled).toMatchObject({ kind: "toggle", value: "1" });
+    const vis = desc?.fields[1];
+    expect(vis).toMatchObject({ kind: "list", value: "1" }); // "hidden" index
+    expect(desc?.fields[5]).toMatchObject({ key: "@rot.0", value: "180.0" }); // rad->deg
+    // idx is reassigned sequentially incl. the prepended fields
+    expect(desc?.fields.map((f) => f.idx)).toEqual(desc?.fields.map((_, i) => i));
+  });
 });
 
 describe("decodeFieldValue", () => {

@@ -85,10 +85,11 @@ export interface ElectraLogEntry {
  *  null disables the firmware gate until then. */
 export const MIN_FIRMWARE: string | null = null;
 
-/** Bumped whenever preset.json or any Lua module changes (SPEC §4.1). v7 =
- *  split-row: values bottom row, on-touch detail editor top row, 7-seg
- *  custom-graphics readout, Prev/Next paging + scrollbar; no DRILL page. */
-export const SURFACE_BUNDLE_VERSION = 7;
+/** Bumped whenever preset.json or any Lua module changes (SPEC §4.1). v8 =
+ *  direct value edit + semantic sync, bigger adaptive 7-seg readout with
+ *  greyed out-of-range digits + touch highlight + link lines, zoom as a
+ *  user-function, layout moved up; transform/enabled/visibility fields. */
+export const SURFACE_BUNDLE_VERSION = 8;
 
 /** Preset name marker used for cheap discovery on the device (SPEC §4.2). */
 export const SURFACE_PRESET_MARKER = "Simularca Surface";

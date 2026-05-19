@@ -135,6 +135,15 @@ export interface ParameterSchema {
 
 /* ----------------------------------------------------------- host bridge */
 
+export type ActorVisibilityMode = "visible" | "hidden" | "selected";
+
+export interface TransformTRS {
+  position: [number, number, number];
+  /** radians */
+  rotation: [number, number, number];
+  scale: [number, number, number];
+}
+
 /** Mirror of host `PluginHostActorSnapshot` (src/features/plugins/pluginApi.ts). */
 export interface PluginHostActorSnapshot {
   id: string;
@@ -143,6 +152,9 @@ export interface PluginHostActorSnapshot {
   pluginType?: string;
   params: ParameterValues;
   schema: ParameterSchema | null;
+  transform: TransformTRS;
+  enabled: boolean;
+  visibilityMode: ActorVisibilityMode;
 }
 
 /** Mirror of host `PluginHostBridge`. Recomputed by the host on selection /
@@ -154,6 +166,14 @@ export interface PluginHostBridge {
     partial: ParameterValues,
     options?: { history?: boolean }
   ): void;
+  updateActorTransform(
+    actorId: string,
+    key: "position" | "rotation" | "scale",
+    value: [number, number, number],
+    options?: { history?: boolean }
+  ): void;
+  updateActorEnabled(actorId: string, enabled: boolean): void;
+  updateActorVisibility(actorId: string, mode: ActorVisibilityMode): void;
 }
 
 /* ----------------------------------------------------- plugin definition */

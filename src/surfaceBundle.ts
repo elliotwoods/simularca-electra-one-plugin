@@ -19,13 +19,17 @@ import { SURFACE_BUNDLE_VERSION, SURFACE_PRESET_MARKER } from "./types";
 
 const COLS = [8, 206, 404, 602];
 const CTRL_W = 184;
-// Mini is 800x480, non-touch. Thin fader strips top & bottom; the custom
-// control owns the centre. Bottom strip ends ~462 to clear MENU/CONTEXT.
+// Mini is 800x480, non-touch. Detail (digit) faders top strip; readout band;
+// value faders below it. The readout band + value row were moved UP by
+// ~1.5*STRIP_H so they no longer sit too low / overlap MENU/CONTEXT
+// (~120px clearance below the value row). All tunable on-device.
 const TOP_Y = 8;
-const BOT_Y = 392;
 const STRIP_H = 70;
-const BAND_Y = 86;
-const BAND_H = 300;
+const BAND_Y = 86; // readout band 86..281
+const BAND_H = 195;
+const BOT_Y = 287; // value row 287..357 (was 392)
+// 7-seg digit scale (was 3 — too small). Tunable.
+const SEG_SCALE = 6;
 
 function fader(
   id: number,
@@ -102,6 +106,9 @@ local pageOffset = 0
 local focusedIdx = nil
 local editing = nil
 local lastPot = {}
+local highlightedKnob = nil
+local digitCx = {}
+local linkTopY = 0
 
 local function splitc(s, sep)
   local t = {}
@@ -202,38 +209,6 @@ local function drawDigit(x, y, w, h, t, mask)
   end
 end
 
--- Render text (digits, '-', '.', ' ') centred at vertical y over full width.
-local function draw7(text, cy, scale)
-  local w = math.floor(20 * scale)
-  local h = math.floor(34 * scale)
-  local t = math.max(2, math.floor(3 * scale))
-  local gap = math.floor(8 * scale)
-  -- measure
-  local total = 0
-  for i = 1, #text do
-    local ch = string.sub(text, i, i)
-    if ch == "." then
-      total = total + math.floor(t * 2) + gap
-    else
-      total = total + w + gap
-    end
-  end
-  total = total - gap
-  local x = math.floor((800 - total) / 2)
-  local y = cy - math.floor(h / 2)
-  for i = 1, #text do
-    local ch = string.sub(text, i, i)
-    if ch == "." then
-      graphics.fillRect(x, y + h - t * 2, t * 2, t * 2)
-      x = x + t * 2 + gap
-    else
-      local mask = SEG[ch] or ""
-      drawDigit(x, y, w, h, t, mask)
-      x = x + w + gap
-    end
-  end
-end
-
 -- ---- rendering ----
 local function fmtValue(f)
   if f == nil then
@@ -296,24 +271,107 @@ local function renderRows()
   end
 end
 
+local DETAIL_CX = { ${COLS.map((c) => c + Math.floor(CTRL_W / 2)).join(", ")} }
+local DETAIL_Y = ${TOP_Y + STRIP_H}
+local COL_NORMAL = 0x6fd0ff
+local COL_GREY = 0x33455c
+local COL_HI = 0xffffff
+
+-- Draw the focused number as a big adaptive 7-seg "digit window": the 4
+-- knob-controlled places plus the rest of the number; places outside the
+-- value's significant range are greyed zeros; the touched digit is bright.
+-- Records each knob digit's centre-x in digitCx for the link lines.
+local function drawReadout()
+  digitCx = {}
+  local f = focusedIdx ~= nil and slots[focusedIdx] or nil
+  if f == nil then
+    graphics.setColor(0x6f86a8)
+    graphics.print(0, ${BAND_Y} + math.floor(${BAND_H} / 2) - 8, "touch a value", 800, CENTER)
+    return
+  end
+  graphics.setColor(0x9fb4cf)
+  graphics.print(0, ${BAND_Y} + 4, f.label, 800, CENTER)
+  if f.kind ~= "number" or editing == nil then
+    graphics.setColor(COL_NORMAL)
+    graphics.print(0, ${BAND_Y} + math.floor(${BAND_H} / 2) - 8, fmtValue(f), 800, CENTER)
+    return
+  end
+  local v = editing.value
+  local prec = editing.prec or 0
+  local vmsd = math.max(msd(v), 0)
+  local topE = math.max(editing.ws, vmsd, 0)
+  local botE = math.min(editing.ws - 3, -prec)
+  local count = (topE - botE + 1) + (v < 0 and 1 or 0) + ((prec > 0) and 1 or 0)
+  local areaH = ${BAND_H} - 64
+  local maxW = math.floor(760 / count)
+  local dw = math.min(math.floor(areaH * 0.6), maxW)
+  if dw < 8 then
+    dw = 8
+  end
+  local dh = math.min(areaH, math.floor(dw / 0.6))
+  local dt = math.max(3, math.floor(dh / 12))
+  local gap = math.max(4, math.floor(dw * 0.3))
+  local total = -gap
+  if v < 0 then
+    total = total + dw + gap
+  end
+  for e = topE, botE, -1 do
+    total = total + dw + gap
+    if e == 0 and prec > 0 then
+      total = total + dt * 2 + gap
+    end
+  end
+  local x = math.floor((800 - total) / 2)
+  local yTop = ${BAND_Y} + 28
+  linkTopY = yTop
+  if v < 0 then
+    graphics.setColor(COL_NORMAL)
+    drawDigit(x, yTop, dw, dh, dt, "g")
+    x = x + dw + gap
+  end
+  for e = topE, botE, -1 do
+    local d = digitAt(v, e)
+    local outOfRange = (e > vmsd) or (e < -prec)
+    local knob = nil
+    if e <= editing.ws and e >= editing.ws - 3 then
+      knob = editing.ws - e
+    end
+    local col = COL_NORMAL
+    if knob ~= nil and knob == highlightedKnob then
+      col = COL_HI
+    elseif outOfRange then
+      col = COL_GREY
+    end
+    graphics.setColor(col)
+    drawDigit(x, yTop, dw, dh, dt, SEG[tostring(d)] or "")
+    if knob ~= nil then
+      digitCx[knob] = x + math.floor(dw / 2)
+    end
+    x = x + dw + gap
+    if e == 0 and prec > 0 then
+      graphics.setColor(outOfRange and COL_GREY or COL_NORMAL)
+      graphics.fillRect(x, yTop + dh - dt * 2, dt * 2, dt * 2)
+      x = x + dt * 2 + gap
+    end
+  end
+end
+
 function paint()
   graphics.setColor(0x0a0f17)
   graphics.fillRect(0, ${BAND_Y}, 800, ${BAND_H})
-  local f = focusedIdx ~= nil and slots[focusedIdx] or nil
-  if f ~= nil then
-    graphics.setColor(0x9fb4cf)
-    graphics.print(0, ${BAND_Y} + 8, f.label, 800, CENTER)
-    local txt = fmtValue(f)
-    graphics.setColor(0x6fd0ff)
-    draw7(txt, ${BAND_Y} + 150, 3)
-  else
-    graphics.setColor(0x6f86a8)
-    graphics.print(0, ${BAND_Y} + 130, "touch a value", 800, CENTER)
+  drawReadout()
+  -- link lines: each digit encoder (top row) to the digit it controls
+  for k = 0, 3 do
+    local cx = digitCx[k]
+    if cx ~= nil and DETAIL_CX[k + 1] ~= nil then
+      graphics.setColor((k == highlightedKnob) and COL_HI or 0x44607f)
+      graphics.drawLine(DETAIL_CX[k + 1], DETAIL_Y, cx, linkTopY)
+    end
   end
   -- scrollbar
   local total = nslots
   local tx, tw = 60, 680
-  local sy = ${BAND_Y} + ${BAND_H} - 40
+  local sy = ${BAND_Y} + ${BAND_H} - 26
   graphics.setColor(0x223044)
   graphics.fillRect(tx, sy, tw, 8)
   if total > 0 then
@@ -330,7 +388,7 @@ function paint()
     local a = pageOffset + 1
     local b = math.min(pageOffset + visible, total)
     graphics.setColor(0x6f86a8)
-    graphics.print(0, sy + 14, tostring(a) .. "-" .. tostring(b) .. " / " .. tostring(total), 800, CENTER)
+    graphics.print(0, sy + 12, tostring(a) .. "-" .. tostring(b) .. " / " .. tostring(total), 800, CENTER)
   end
 end
 
@@ -447,27 +505,45 @@ local function potOf(valueObject, base)
   return id, nil
 end
 
--- bottom row (ids 5-8): coarse value, or zoom when its number is focused
+local function numberStep(f)
+  if f.step ~= nil and f.step ~= 0 then
+    return f.step
+  end
+  if f.mn ~= nil and f.mx ~= nil then
+    return (f.mx - f.mn) / 100
+  end
+  return 10 ^ (-(f.prec or 0))
+end
+
+-- bottom row (ids 5-8): the parameter's own encoder directly edits the value
+-- (scaled). Numbers go via the semantic scp dv path so the host applies the
+-- real value (works even without min/max).
 function valueChanged(valueObject, value)
   local id, ctrl = potOf(valueObject, 5)
-  local slot = id - 5
-  local abs = pageOffset + slot
+  local abs = pageOffset + (id - 5)
   local f = slots[abs]
   if f == nil then
     return
   end
-  if focusedIdx == abs and f.kind == "number" and editing ~= nil then
+  if f.kind == "number" then
     local prev = lastPot[id] or value
     local delta = value - prev
     lastPot[id] = value
-    if delta ~= 0 then
-      editing.ws = clampWS(editing.ws + delta, editing.value, editing.prec)
-      repaint()
-      recenter(ctrl, id)
+    if delta == 0 then
+      return
     end
+    local prec = f.prec or 0
+    local nv = roundp(clampRange((tonumber(f.value) or 0) + delta * numberStep(f), f.mn, f.mx), prec)
+    f.value = string.format("%." .. tostring(prec) .. "f", nv)
+    if focusedIdx == abs and editing ~= nil then
+      editing.value = nv
+    end
+    print("scp dv " .. abs .. " " .. f.value)
+    repaint()
+    recenter(ctrl, id)
     return
   end
-  -- coarse: host scales 0..127 (decodeDeviceRaw)
+  -- toggle / list: coarse 0..127, host decodeDeviceRaw maps it
   print("scp vc " .. abs .. " " .. tostring(value))
   f.value = tostring(value)
   repaint()
@@ -506,12 +582,16 @@ function detailChanged(valueObject, value)
       cur = #f.opts - 1
     end
     f.value = tostring(cur)
-    print("scp vc " .. focusedIdx .. " " .. cur)
+    -- emit a 0..127 position so host decodeDeviceRaw maps back to this option
+    local n = #f.opts
+    local raw = (n > 1) and math.floor(cur / (n - 1) * 127 + 0.5) or 0
+    print("scp vc " .. focusedIdx .. " " .. raw)
     repaint()
   elseif f.kind == "toggle" then
-    local v = (f.value == "1") and "0" or "1"
-    f.value = v
-    print("scp vc " .. focusedIdx .. " " .. v)
+    local on = (f.value ~= "1")
+    f.value = on and "1" or "0"
+    -- host decodeDeviceRaw treats >=64 as true
+    print("scp vc " .. focusedIdx .. " " .. (on and 127 or 0))
     repaint()
   end
   recenter(ctrl, id)
@@ -527,6 +607,14 @@ pcall(function()
         if touched and slots[abs] ~= nil then
           focusSlot(abs)
         end
+      elseif potId >= 1 and potId <= 4 then
+        -- digit encoder touched = preview which digit it controls
+        if touched then
+          highlightedKnob = potId - 1
+        elseif highlightedKnob == potId - 1 then
+          highlightedKnob = nil
+        end
+        repaint()
       end
     end
   end
@@ -553,9 +641,27 @@ function pageNext()
   applyPage(pageOffset + 4)
 end
 
+-- Zoom = pan the 4-digit window of a focused number (value encoder no longer
+-- zooms; it edits directly). Exposed as Preset-Menu user-functions.
+function zoomOut()
+  if editing ~= nil then
+    editing.ws = clampWS(editing.ws - 1, editing.value, editing.prec)
+    repaint()
+  end
+end
+
+function zoomIn()
+  if editing ~= nil then
+    editing.ws = clampWS(editing.ws + 1, editing.value, editing.prec)
+    repaint()
+  end
+end
+
 preset.userFunctions = {
   pot1 = { call = pagePrev, name = "Prev", close = true },
-  pot2 = { call = pageNext, name = "Next", close = true }
+  pot2 = { call = pageNext, name = "Next", close = true },
+  pot3 = { call = zoomOut, name = "Zoom-", close = true },
+  pot4 = { call = zoomIn, name = "Zoom+", close = true }
 }
 
 local function registerPaint()
