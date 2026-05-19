@@ -24,12 +24,13 @@ const CTRL_W = 184;
 // ~1.5*STRIP_H so they no longer sit too low / overlap MENU/CONTEXT
 // (~120px clearance below the value row). All tunable on-device.
 const TOP_Y = 8;
-const STRIP_H = 70;
-const BAND_Y = 86; // readout band 86..281
-const BAND_H = 195;
-const BOT_Y = 287; // value row 287..357 (was 392)
-// 7-seg digit scale (was 3 — too small). Tunable.
-const SEG_SCALE = 6;
+const STRIP_H = 70; // detail (digit) faders: screen 8..78
+// The readout custom control fills the gap between the detail row and the
+// value row. Custom-control paint is RELATIVE to these bounds (0..BAND_H);
+// digits auto-size to fill it. ~4px gap above the value row.
+const BAND_Y = 82; // readout band: screen 82..283
+const BAND_H = 201;
+const BOT_Y = 287; // value faders: screen 287..357 (clears MENU/CONTEXT)
 
 function fader(
   id: number,
@@ -272,7 +273,6 @@ local function renderRows()
 end
 
 local DETAIL_CX = { ${COLS.map((c) => c + Math.floor(CTRL_W / 2)).join(", ")} }
-local DETAIL_Y = ${TOP_Y + STRIP_H}
 local COL_NORMAL = 0x6fd0ff
 local COL_GREY = 0x33455c
 local COL_HI = 0xffffff
@@ -281,19 +281,23 @@ local COL_HI = 0xffffff
 -- knob-controlled places plus the rest of the number; places outside the
 -- value's significant range are greyed zeros; the touched digit is bright.
 -- Records each knob digit's centre-x in digitCx for the link lines.
+-- NOTE: a custom control's paint callback draws in coordinates RELATIVE to
+-- the control's own bounds (0,0 = control top-left), not absolute screen.
+-- BAND_H is the control height; everything here is 0..BAND_H.
+local BANDH = ${BAND_H}
 local function drawReadout()
   digitCx = {}
   local f = focusedIdx ~= nil and slots[focusedIdx] or nil
   if f == nil then
     graphics.setColor(0x6f86a8)
-    graphics.print(0, ${BAND_Y} + math.floor(${BAND_H} / 2) - 8, "touch a value", 800, CENTER)
+    graphics.print(0, math.floor(BANDH / 2) - 8, "touch a value", 800, CENTER)
     return
   end
   graphics.setColor(0x9fb4cf)
-  graphics.print(0, ${BAND_Y} + 4, f.label, 800, CENTER)
+  graphics.print(0, 2, f.label, 800, CENTER)
   if f.kind ~= "number" or editing == nil then
     graphics.setColor(COL_NORMAL)
-    graphics.print(0, ${BAND_Y} + math.floor(${BAND_H} / 2) - 8, fmtValue(f), 800, CENTER)
+    graphics.print(0, math.floor(BANDH / 2) - 8, fmtValue(f), 800, CENTER)
     return
   end
   local v = editing.value
@@ -302,15 +306,17 @@ local function drawReadout()
   local topE = math.max(editing.ws, vmsd, 0)
   local botE = math.min(editing.ws - 3, -prec)
   local count = (topE - botE + 1) + (v < 0 and 1 or 0) + ((prec > 0) and 1 or 0)
-  local areaH = ${BAND_H} - 64
+  local areaTop = 22
+  local areaBot = BANDH - 28
+  local areaH = areaBot - areaTop
   local maxW = math.floor(760 / count)
-  local dw = math.min(math.floor(areaH * 0.6), maxW)
+  local dw = math.min(math.floor(areaH * 0.62), maxW)
   if dw < 8 then
     dw = 8
   end
-  local dh = math.min(areaH, math.floor(dw / 0.6))
+  local dh = math.min(areaH, math.floor(dw / 0.58))
   local dt = math.max(3, math.floor(dh / 12))
-  local gap = math.max(4, math.floor(dw * 0.3))
+  local gap = math.max(4, math.floor(dw * 0.28))
   local total = -gap
   if v < 0 then
     total = total + dw + gap
@@ -322,7 +328,7 @@ local function drawReadout()
     end
   end
   local x = math.floor((800 - total) / 2)
-  local yTop = ${BAND_Y} + 28
+  local yTop = areaTop + math.floor((areaH - dh) / 2)
   linkTopY = yTop
   if v < 0 then
     graphics.setColor(COL_NORMAL)
@@ -358,20 +364,21 @@ end
 
 function paint()
   graphics.setColor(0x0a0f17)
-  graphics.fillRect(0, ${BAND_Y}, 800, ${BAND_H})
+  graphics.fillRect(0, 0, 800, BANDH)
   drawReadout()
-  -- link lines: each digit encoder (top row) to the digit it controls
+  -- link lines from the band top edge (just under each digit encoder) down
+  -- to the digit it controls (control-relative coords).
   for k = 0, 3 do
     local cx = digitCx[k]
     if cx ~= nil and DETAIL_CX[k + 1] ~= nil then
       graphics.setColor((k == highlightedKnob) and COL_HI or 0x44607f)
-      graphics.drawLine(DETAIL_CX[k + 1], DETAIL_Y, cx, linkTopY)
+      graphics.drawLine(DETAIL_CX[k + 1], 0, cx, linkTopY)
     end
   end
   -- scrollbar
   local total = nslots
   local tx, tw = 60, 680
-  local sy = ${BAND_Y} + ${BAND_H} - 26
+  local sy = BANDH - 22
   graphics.setColor(0x223044)
   graphics.fillRect(tx, sy, tw, 8)
   if total > 0 then

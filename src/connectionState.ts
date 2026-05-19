@@ -46,7 +46,8 @@ import {
   decodeDeviceLine,
   setActorCommand,
   setFieldValueCommand,
-  type SurfaceDescriptor
+  type SurfaceDescriptor,
+  type SurfaceField
 } from "./sspCodec";
 
 export type SurfaceApplyFn = (
@@ -308,47 +309,57 @@ export class ElectraSession {
     }
   }
 
-  private onDeviceValue(idx: number, raw: string): void {
+  /**
+   * Shared device→host edit path. Logs the precise reason at every guard so
+   * "values don't update in Simularca" is diagnosable from the inspector's
+   * Diagnostics panel rather than failing silently.
+   */
+  private applyDeviceEdit(
+    tag: string,
+    idx: number,
+    decode: (field: SurfaceField) => boolean | number | string | undefined
+  ): void {
     if (!this.descriptor) {
+      this.log("warn", `${tag} ${idx}: ignored — no descriptor (no actor mirrored yet).`);
       return;
     }
     const field = this.descriptor.fields.find((f) => f.idx === idx);
     if (!field) {
+      this.log(
+        "warn",
+        `${tag} ${idx}: no field at that index (descriptor has ${this.descriptor.fields.length}).`
+      );
       return;
     }
-    const decoded = decodeDeviceRaw(field, Number(raw));
+    const decoded = decode(field);
     if (decoded === undefined) {
+      this.log("warn", `${tag} ${field.label}: value not decodable for kind ${field.kind}.`);
       return;
     }
     // Loop prevention: the host re-render this triggers must not echo a
     // SET_FIELD_VALUE straight back (SPEC §8.1).
     this.suppressKey = field.key;
     this.suppressUntil = Date.now() + SURFACE_SUPPRESS_MS;
-    this.log("info", `device edit: ${field.label} -> ${String(decoded)}`);
-    if (this.applyFn && this.snapshot) {
-      this.applyFn(this.snapshot.id, field.key, decoded, { history: false });
+    if (!this.applyFn || !this.snapshot) {
+      this.log(
+        "warn",
+        `${tag} ${field.label} -> ${String(decoded)}: NOT applied — ${
+          !this.applyFn ? "no apply callback" : "no selected actor"
+        }.`
+      );
+      return;
     }
+    this.log("info", `${tag} ${field.label} (${field.key}) -> ${String(decoded)} [applied]`);
+    this.applyFn(this.snapshot.id, field.key, decoded, { history: false });
+  }
+
+  private onDeviceValue(idx: number, raw: string): void {
+    this.applyDeviceEdit("device edit", idx, (field) => decodeDeviceRaw(field, Number(raw)));
   }
 
   /** Digit-editor (drill) value: the actual semantic number, clamped. */
   private onDeviceDirect(idx: number, raw: string): void {
-    if (!this.descriptor) {
-      return;
-    }
-    const field = this.descriptor.fields.find((f) => f.idx === idx);
-    if (!field) {
-      return;
-    }
-    const decoded = decodeDirectNumber(field, raw);
-    if (decoded === undefined) {
-      return;
-    }
-    this.suppressKey = field.key;
-    this.suppressUntil = Date.now() + SURFACE_SUPPRESS_MS;
-    this.log("info", `digit edit: ${field.label} -> ${String(decoded)}`);
-    if (this.applyFn && this.snapshot) {
-      this.applyFn(this.snapshot.id, field.key, decoded, { history: false });
-    }
+    this.applyDeviceEdit("digit edit", idx, (field) => decodeDirectNumber(field, raw));
   }
 
   /* ----------------------------------------------------------- lifecycle */
