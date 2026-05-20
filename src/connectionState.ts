@@ -566,6 +566,10 @@ export class ElectraSession {
       this.log("info", `device: focused field ${ev.idx}`);
     } else if (ev?.type === "ready") {
       this.log("info", `device: surface ready (bundle ${ev.bundle ?? "?"})`);
+    } else if (ev?.type === "button") {
+      // Log-only for now. Host action wiring (Play/Pause etc.) is intentionally
+      // out of scope -- add a switch on ev.action here when wiring lands.
+      this.log("info", `device: button ${ev.action}`);
     } else if (ev?.type === "log") {
       this.log("info", `device: ${ev.text}`);
     }

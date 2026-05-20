@@ -31,6 +31,9 @@ export interface SurfaceField {
   step?: number;
   /** Fractional digits the field allows — drives the on-device digit editor. */
   precision?: number;
+  /** Short unit suffix (e.g. "m", "°", "x", "m/s"); rendered next to the
+   *  value on the device. Empty/undefined → no unit shown. */
+  unit?: string;
   options?: string[];
 }
 
@@ -81,6 +84,7 @@ export function encodeSurfacePayload(desc: SurfaceDescriptor): string {
       f.max ?? "",
       f.step ?? "",
       f.precision ?? "",
+      sanitizeToken(f.unit ?? "", 8),
       (f.options ?? []).map((o) => sanitizeToken(o, 16)).join(",")
     ].join(US)
   );
@@ -109,7 +113,8 @@ export function decodeSurfacePayload(payload: string): SurfaceDescriptor | null 
       max: c[6] ? Number(c[6]) : undefined,
       step: c[7] ? Number(c[7]) : undefined,
       precision: c[8] ? Number(c[8]) : undefined,
-      options: c[9] ? c[9].split(",") : undefined
+      unit: c[9] ? c[9] : undefined,
+      options: c[10] ? c[10].split(",") : undefined
     });
   }
   return { actorId: "", actorName: head[1] ?? "", fields };
@@ -141,6 +146,7 @@ export type DeviceEvent =
   | { type: "drillexit" } // left the digit editor
   | { type: "ready"; bundle: number | null }
   | { type: "focus"; idx: number }
+  | { type: "button"; action: string } // Mini hardware button (3-6) pressed
   | { type: "log"; text: string };
 
 /** Parse one device SSP line. Returns null for unrelated text. */
@@ -185,6 +191,13 @@ export function decodeDeviceLine(line: string): DeviceEvent | null {
   m = /^(?:scp\s+ready|simularca:ready)\s+bundle=(\d+)$/.exec(t);
   if (m) {
     return { type: "ready", bundle: Number(m[1]) };
+  }
+  // Hardware-button press from a pad control (Mini buttons 3-6). Must sit
+  // ABOVE the generic scp-log catch-all so `scp btn playpause` doesn't
+  // regress into {type:"log"}.
+  m = /^scp\s+btn\s+(\S+)$/.exec(t);
+  if (m) {
+    return { type: "button", action: m[1] };
   }
   if (t.startsWith("scp ")) {
     return { type: "log", text: t.slice(4) };

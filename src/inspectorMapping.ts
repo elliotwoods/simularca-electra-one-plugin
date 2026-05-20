@@ -42,6 +42,8 @@ interface Mapped {
   max?: number;
   step?: number;
   precision?: number;
+  /** Optional unit suffix carried verbatim from the schema (e.g. "m", "°"). */
+  unit?: string;
   options?: string[];
 }
 
@@ -58,7 +60,8 @@ function mapField(def: ParameterDefinition, params: ParameterValues): Mapped | n
         min: def.min,
         max: def.max,
         step: def.step,
-        precision: def.precision
+        precision: def.precision,
+        unit: def.unit
       };
     case "select": {
       const options = def.options ?? [];
@@ -74,6 +77,13 @@ function mapField(def: ParameterDefinition, params: ParameterValues): Mapped | n
       // Dynamic candidate lists arrive in Phase 5; show read-only for now.
       return { kind: "readonly", value: String(raw ?? "—") };
     case "vector3":
+      // Still rendered read-only until the Phase 5 vector renderer lands; we
+      // forward the unit now so it lights up automatically when that ships.
+      return {
+        kind: "readonly",
+        value: Array.isArray(raw) ? (raw as unknown[]).join(", ") : String(raw ?? ""),
+        unit: def.unit
+      };
     case "color":
       return {
         kind: "readonly",
@@ -112,7 +122,8 @@ function commonFields(snapshot: PluginHostActorSnapshot): SurfaceField[] {
     label: string,
     value: number,
     step: number,
-    precision: number
+    precision: number,
+    unit?: string
   ): SurfaceField => ({
     key,
     idx: 0,
@@ -120,7 +131,8 @@ function commonFields(snapshot: PluginHostActorSnapshot): SurfaceField[] {
     label,
     value: value.toFixed(precision),
     step,
-    precision
+    precision,
+    unit
   });
   const axes = ["X", "Y", "Z"] as const;
   const fields: SurfaceField[] = [
@@ -141,13 +153,17 @@ function commonFields(snapshot: PluginHostActorSnapshot): SurfaceField[] {
     }
   ];
   for (let i = 0; i < 3; i += 1) {
-    fields.push(num(`@pos.${i}`, `Pos ${axes[i]}`, t.position[i], 0.001, 3));
+    fields.push(num(`@pos.${i}`, `Pos ${axes[i]}`, t.position[i], 0.001, 3, "m"));
   }
   for (let i = 0; i < 3; i += 1) {
-    fields.push(num(`@rot.${i}`, `Rot ${axes[i]}`, t.rotation[i] * RAD_TO_DEG, 1, 1));
+    // Wire token "deg" (not "°") — the SSP payload is 7-bit ASCII so UTF-8
+    // multi-byte characters would not survive sanitizeToken / asciiBytes. The
+    // device renders a degree-symbol glyph for the "deg" token in the zoomed
+    // readout; the mini-view fader label shows the literal text "deg".
+    fields.push(num(`@rot.${i}`, `Rot ${axes[i]}`, t.rotation[i] * RAD_TO_DEG, 1, 1, "deg"));
   }
   for (let i = 0; i < 3; i += 1) {
-    fields.push(num(`@scl.${i}`, `Scl ${axes[i]}`, t.scale[i], 0.001, 3));
+    fields.push(num(`@scl.${i}`, `Scl ${axes[i]}`, t.scale[i], 0.001, 3, "x"));
   }
   return fields;
 }
@@ -188,6 +204,7 @@ export function mapInspectorToSurface(
       max: mapped.max,
       step: mapped.step,
       precision: mapped.precision,
+      unit: mapped.unit,
       options: mapped.options
     });
   }

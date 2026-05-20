@@ -371,17 +371,25 @@ never overwrite. Long labels → device-side shortening. Firmware <
   focus (persists until another value is touched). A centre `type:"custom"`
   control paints the focused value as a **7-segment** readout (Lua
   `graphics.fillRect` segment renderer — works around the tiny system font)
-  plus a **scrollbar**; **Prev/Next** `preset.userFunctions` page through
-  >4 fields (host sends all visible fields, `MAX_FIELDS=64`; device pages 4 at
-  a time and reports **absolute** indices). No encoder-push, no DRILL page, no
-  "Edit" user-function. `digits.ts` math reused unchanged. Host tracks
+  plus a **scrollbar**; **Back/Next/Spare/Play-Pause** are exposed via
+  `preset.userFunctions` (one-time Preset-Menu bind per device) calling Lua
+  handlers `btnBack`/`btnNext`/`btnSpare`/`btnPlayPause`. v26 also wires
+  four `type:"pad"` controls at potIds 9-12 reusing the same handlers, as
+  a forward-looking hedge — empirically dormant on fw v4.1.4 (hardware
+  buttons emit nothing to a preset's Lua) but ready for any future
+  firmware that dispatches them. Pages cycle 4 fields at a time (host
+  sends all visible fields, `MAX_FIELDS=64`; device reports **absolute**
+  indices). No encoder-push, no DRILL page, no "Edit" user-function.
+  `digits.ts` math reused unchanged. Host tracks
   `focusedSlot`. Device-side layout / 7-seg scale / fader-vs-custom
   coexistence remain on-device tuning points.
 - **Phase 4.2 — Readout/value-sync refinements (current, bundle v8).** The
   value encoder now **directly edits the value** (scaled, semantic `scp dv`
   path) — this also fixes "values don't update in Simularca" (numbers no
   longer go through the lossy raw-0..127 path). Zoom moved off the value
-  encoder to **Zoom-/Zoom+ user-functions**. The readout is a larger adaptive
+  encoder; the digit-window pan is now reached by **touching a digit
+  encoder** (Zoom-/Zoom+ user-functions and the whole `preset.userFunctions`
+  table removed in v26). The readout is a larger adaptive
   7-seg digit window: places outside the value's significant range are
   **greyed zeros**, the touched digit is **highlighted** (digit-encoder touch
   is now handled), and **link lines** join each top encoder to the digit it

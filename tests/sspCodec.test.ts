@@ -34,9 +34,9 @@ describe("surface payload round-trip", () => {
     const round = decodeSurfacePayload(encodeSurfacePayload(desc));
     expect(round?.actorName).toBe("Cube");
     expect(round?.fields).toEqual([
-      { key: "", idx: 0, kind: "toggle", label: "On", value: "1", min: undefined, max: undefined, step: undefined, precision: undefined, options: undefined },
-      { key: "", idx: 1, kind: "number", label: "Size", value: "2.50", min: 0, max: 10, step: 0.5, precision: undefined, options: undefined },
-      { key: "", idx: 2, kind: "list", label: "Mode", value: "1", min: undefined, max: undefined, step: undefined, precision: undefined, options: ["a", "b", "c"] }
+      { key: "", idx: 0, kind: "toggle", label: "On", value: "1", min: undefined, max: undefined, step: undefined, precision: undefined, unit: undefined, options: undefined },
+      { key: "", idx: 1, kind: "number", label: "Size", value: "2.50", min: 0, max: 10, step: 0.5, precision: undefined, unit: undefined, options: undefined },
+      { key: "", idx: 2, kind: "list", label: "Mode", value: "1", min: undefined, max: undefined, step: undefined, precision: undefined, unit: undefined, options: ["a", "b", "c"] }
     ]);
   });
 
@@ -52,6 +52,42 @@ describe("surface payload round-trip", () => {
       step: 0.1,
       precision: 2
     });
+  });
+
+  it("round-trips the unit column", () => {
+    const d = {
+      actorId: "a",
+      actorName: "N",
+      fields: [
+        { key: "size", idx: 0, kind: "number" as const, label: "Size", value: "1.50", min: 0, max: 9, step: 0.1, precision: 2, unit: "m" },
+        { key: "rot", idx: 1, kind: "number" as const, label: "Rot", value: "45.0", precision: 1, unit: "deg" },
+        { key: "mode", idx: 2, kind: "list" as const, label: "Mode", value: "0", options: ["a", "b"] }
+      ]
+    };
+    const decoded = decodeSurfacePayload(encodeSurfacePayload(d));
+    expect(decoded?.fields[0].unit).toBe("m");
+    expect(decoded?.fields[1].unit).toBe("deg");
+    expect(decoded?.fields[2].unit).toBeUndefined();
+    // Options still parse after the unit column shift.
+    expect(decoded?.fields[2].options).toEqual(["a", "b"]);
+  });
+
+  it("locks the SSP column order (unit before options)", () => {
+    // Direct format assertion so a future shuffle of column indices breaks
+    // loudly. Columns: F | idx | kind | label | value | min | max | step |
+    // precision | unit | options. Separator is the ASCII unit-separator 0x1F.
+    const US = String.fromCharCode(0x1f);
+    const RS = String.fromCharCode(0x1e);
+    const enc = encodeSurfacePayload({
+      actorId: "a",
+      actorName: "N",
+      fields: [{
+        key: "k", idx: 7, kind: "number", label: "L", value: "V",
+        min: 1, max: 2, step: 3, precision: 4, unit: "m", options: ["o"]
+      }]
+    });
+    const row = enc.split(RS)[1].split(US);
+    expect(row).toEqual(["F", "7", "number", "L", "V", "1", "2", "3", "4", "m", "o"]);
   });
 
   it("decodeSurfacePayload rejects a non-A payload", () => {
@@ -71,7 +107,7 @@ describe("command framing", () => {
 });
 
 describe("decodeDeviceLine", () => {
-  it("parses value / dvalue / drill / ready / focus / log, ignores noise", () => {
+  it("parses value / dvalue / drill / ready / focus / button / log, ignores noise", () => {
     expect(decodeDeviceLine("scp vc 4 0.75")).toEqual({ type: "value", idx: 4, value: "0.75" });
     expect(decodeDeviceLine("scp dv 1 -3.250")).toEqual({ type: "dvalue", idx: 1, value: "-3.250" });
     expect(decodeDeviceLine("scp drill 5")).toEqual({ type: "drill", idx: 5 });
@@ -79,6 +115,11 @@ describe("decodeDeviceLine", () => {
     expect(decodeDeviceLine("scp focus 2")).toEqual({ type: "focus", idx: 2 });
     expect(decodeDeviceLine("simularca:ready bundle=4")).toEqual({ type: "ready", bundle: 4 });
     expect(decodeDeviceLine("scp ready bundle=3")).toEqual({ type: "ready", bundle: 3 });
+    // Hardware-button pads (Mini 3-6) emit `scp btn <action>`. Must sit above
+    // the generic scp-log catch-all so the next assertion (`scp hello world`)
+    // still becomes {type:"log"}.
+    expect(decodeDeviceLine("scp btn playpause")).toEqual({ type: "button", action: "playpause" });
+    expect(decodeDeviceLine("scp btn spare")).toEqual({ type: "button", action: "spare" });
     expect(decodeDeviceLine("scp hello world")).toEqual({ type: "log", text: "hello world" });
     expect(decodeDeviceLine("unrelated device chatter")).toBeNull();
   });

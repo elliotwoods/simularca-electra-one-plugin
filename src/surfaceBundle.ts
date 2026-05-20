@@ -6,7 +6,10 @@
 //   centre band = a custom control painting a 7-segment readout + scrollbar
 // Touch a value encoder to focus it (persists); the focused number's own
 // bottom encoder pans the digit window (zoom); the 4 top encoders are the
-// digit places. Prev/Next user-functions page through >4 fields.
+// digit places. Mini hardware buttons page through >4 fields and trigger
+// Spare/Play-Pause via preset.userFunctions (one-time user bind on the
+// device); pad controls at potIds 9-12 are also wired as a forward-looking
+// hedge for any future firmware that dispatches hardware buttons directly.
 //
 // Host -> device: Execute-Lua ssp("<payload>"). Device -> host: the Lua app
 // self-emits each `scp …` line as a SysEx via `midi.sendSysex(0, …)` -- wire
@@ -69,6 +72,35 @@ function fader(
   };
 }
 
+// Hardware-button pad (Mini buttons 3-6 = potIds 9-12). Fires the named Lua
+// function on press; no MIDI is emitted, no snapshot value. `visible:false`
+// so the pad has no on-screen footprint -- it exists solely as a Lua hook.
+// If a firmware revision rejects the message-less form (provision NACK on
+// preset upload), see the fallback ladder in types.ts SURFACE_BUNDLE_VERSION
+// v26 doc-comment (add a stub message, drop momentary, try type:"button",
+// last resort poll the Message value from Lua).
+function pad(
+  id: number,
+  potId: number,
+  fn: string,
+  label: string,
+  col: number
+): Record<string, unknown> {
+  return {
+    id,
+    type: "pad",
+    mode: "momentary",
+    name: label,
+    color: "FFFFFF",
+    bounds: [COLS[col], BOT_Y, CTRL_W, STRIP_H],
+    pageId: 1,
+    controlSetId: 1,
+    visible: false,
+    inputs: [{ potId, valueId: "value" }],
+    values: [{ id: "value", function: fn }]
+  };
+}
+
 function buildControls(): Record<string, unknown>[] {
   const controls: Record<string, unknown>[] = [];
   // Detail row = top, pots 1-4, ids 1-4.
@@ -89,6 +121,13 @@ function buildControls(): Record<string, unknown>[] {
     controlSetId: 1,
     visible: true
   });
+  // Hardware-button pads (Mini buttons 3-6 = potIds 9-12). Ids start at 10
+  // to leave 1-9 for the eight faders + custom band. Each fires a Lua handler
+  // on press; no MIDI.
+  controls.push(pad(10, 9, "btnBack", "Back", 0));
+  controls.push(pad(11, 10, "btnNext", "Next", 1));
+  controls.push(pad(12, 11, "btnClear", "Clear", 2));
+  controls.push(pad(13, 12, "btnPlayPause", "Play/Pause", 3));
   return controls;
 }
 
@@ -443,11 +482,19 @@ local function fmtValue(f)
   if f == nil then
     return ""
   end
+  local s
   if f.kind == "number" then
     local prec = f.prec or 0
-    return string.format("%." .. tostring(prec) .. "f", tonumber(f.value) or 0)
+    s = string.format("%." .. tostring(prec) .. "f", tonumber(f.value) or 0)
+  else
+    s = tostring(f.value)
   end
-  return tostring(f.value)
+  -- Mini-view + non-editing centered text get the unit suffix automatically
+  -- (the editing 7-seg path renders units via drawUnit instead).
+  if f.unit ~= nil and f.unit ~= "" then
+    s = s .. " " .. f.unit
+  end
+  return s
 end
 
 local function nameOf(id, text)
@@ -599,6 +646,65 @@ local function drawEnum(f)
   end
 end
 
+-- ---- unit glyph rendering ----
+-- A curated 7-seg-styled glyph set aligned with the digit row in
+-- drawReadout. Any unit token NOT in the table falls back to firmware text
+-- via graphics.print, so the wire stays unconstrained while the common
+-- units (m, deg, x, s, d) get a glyph that matches the digit style.
+-- WIRE NOTE: SSP payloads are 7-bit ASCII (sanitizeToken strips bytes > 0x7E),
+-- so non-ASCII unit characters never reach here. The host sends the ASCII
+-- token "deg" for rotation; we render the degree symbol below.
+local function drawDegree(x, y, w, h)
+  -- Small filled square at the top-centre of the slot (~h/5).
+  local sz = math.max(3, math.floor(math.min(w, h) / 5))
+  graphics.fillRect(x + math.floor((w - sz) / 2), y, sz, sz)
+end
+
+local function drawM(x, y, w, h)
+  -- Lowercase "m": three short verticals from the middle down to the bottom,
+  -- joined by a thin bar across the top of the lower half.
+  local t = math.max(2, math.floor(h / 10))
+  local h2 = math.floor(h / 2)
+  graphics.fillRect(x, y + h2, w, t)
+  graphics.fillRect(x, y + h2, t, h - h2)
+  graphics.fillRect(x + math.floor((w - t) / 2), y + h2, t, h - h2)
+  graphics.fillRect(x + w - t, y + h2, t, h - h2)
+end
+
+local function drawX(x, y, w, h)
+  -- Axis-aligned "x" -- two stepped diagonals built from small fillRects (the
+  -- device has no diagonal primitive).
+  local t = math.max(2, math.floor(h / 10))
+  local steps = math.max(3, math.floor(math.min(w, h) / t))
+  local sx = math.floor((w - t) / (steps - 1))
+  local sy = math.floor((h - t) / (steps - 1))
+  for i = 0, steps - 1 do
+    graphics.fillRect(x + i * sx, y + i * sy, t, t)
+    graphics.fillRect(x + (steps - 1 - i) * sx, y + i * sy, t, t)
+  end
+end
+
+-- Caller owns colour (so the highlight/dim state still applies). Falls
+-- through to firmware text for unrecognised tokens (m/s, 1/s, px, %, ...).
+local function drawUnit(unit, x, y, w, h, discHW, r)
+  if unit == nil or unit == "" then
+    return
+  end
+  if unit == "deg" then
+    drawDegree(x, y, w, h)
+  elseif unit == "m" then
+    drawM(x, y, w, h)
+  elseif unit == "x" then
+    drawX(x, y, w, h)
+  elseif unit == "s" or unit == "S" then
+    drawDigit(x, y, w, h, "afgcd", discHW, r)
+  elseif unit == "d" then
+    drawDigit(x, y, w, h, "bcdeg", discHW, r)
+  else
+    graphics.print(x, y + math.floor(h / 2) - 8, unit, w, CENTER)
+  end
+end
+
 local function drawReadout()
   digitCx = {}
   local f = focusedIdx ~= nil and slots[focusedIdx] or nil
@@ -696,6 +802,18 @@ ${ghostDigit}    graphics.setColor(col)
       graphics.fillRect(x, yTop + dh - dt * 2, dt * 2, dt * 2)
       x = x + dt * 2 + gap
     end
+  end
+  -- Unit glyph slot, right of the rightmost digit. Sized ~60% of digit width
+  -- so it reads as an annotation rather than a digit. Inherits the normal
+  -- colour (dimmed when any knob is touched, matching the digit row).
+  if f.unit ~= nil and f.unit ~= "" then
+    local uw = math.floor(dw * 0.6)
+    local uc = COL_NORMAL
+    if highlightedKnob ~= nil then
+      uc = dim(uc, 0.5)
+    end
+    graphics.setColor(uc)
+    drawUnit(f.unit, x, yTop, uw, dh, discHW, r)
   end
 end
 
@@ -885,7 +1003,8 @@ function ssp(cmd)
           mx = tonumber(c[7]),
           step = tonumber(c[8]),
           prec = tonumber(c[9]) or 0,
-          opts = (c[10] ~= nil and c[10] ~= "") and splitc(c[10], ",") or nil
+          unit = (c[10] ~= nil and c[10] ~= "") and c[10] or nil,
+          opts = (c[11] ~= nil and c[11] ~= "") and splitc(c[11], ",") or nil
         }
         if idx + 1 > n then
           n = idx + 1
@@ -897,10 +1016,12 @@ function ssp(cmd)
     if pageOffset > maxOff then
       pageOffset = maxOff
     end
-    if focusedIdx ~= nil and slots[focusedIdx] == nil then
-      focusedIdx = nil
-      editing = nil
-    end
+    -- Every SET_ACTOR is treated as a fresh focus context. A guarded clear
+    -- (only when the old slot vanished) would leave the centre band zoomed
+    -- on a DIFFERENT actor's field at the same absolute index whenever the
+    -- new actor still has a field there -- common in practice.
+    focusedIdx = nil
+    editing = nil
     recenterAll()
     repaint()
   elseif head[1] == "V" then
@@ -1104,7 +1225,8 @@ pcall(function()
   end
 end)
 
--- ---- paging (Preset Menu user-functions; assignable to a hardware button) ----
+-- ---- paging (called from btnBack/btnNext, themselves invoked via the
+--      preset.userFunctions table OR the dormant pads at potIds 9-10) ----
 local function applyPage(off)
   local maxOff = math.max(0, nslots - 4)
   if off < 0 then
@@ -1126,27 +1248,54 @@ function pageNext()
   applyPage(pageOffset + 4)
 end
 
--- Zoom = pan the 4-digit window of a focused number (value encoder no longer
--- zooms; it edits directly). Exposed as Preset-Menu user-functions.
-function zoomOut()
-  if editing ~= nil then
-    editing.ws = clampWS(editing.ws - 1, editing.value, editing.prec)
-    repaint()
-  end
+-- Hardware-button handlers. Wired through inputs.potId 9..12 on pad controls
+-- (Electra Mini buttons 3-6). Momentary pads fire press = 127 and release = 0;
+-- gate on release so each physical press fires exactly once. btnBack/btnNext
+-- are device-local (paging). btnClear is also device-local: it drops focus
+-- back to the empty/mini-view state (a hardware shortcut to the SET_ACTOR
+-- clear behaviour). btnPlayPause emits "scp btn playpause" via the file-
+-- scope sspEmit so the host log can pick it up; actual host transport
+-- wiring (a real Play/Pause action) is intentionally deferred.
+function btnBack(valueObject, value)
+  if value == 0 then return end
+  pagePrev()
 end
 
-function zoomIn()
-  if editing ~= nil then
-    editing.ws = clampWS(editing.ws + 1, editing.value, editing.prec)
-    repaint()
-  end
+function btnNext(valueObject, value)
+  if value == 0 then return end
+  pageNext()
 end
 
+function btnClear(valueObject, value)
+  if value == 0 then return end
+  focusedIdx = nil
+  editing = nil
+  recenterAll()
+  repaint()
+  sspEmit("scp btn clear")
+end
+
+function btnPlayPause(valueObject, value)
+  if value == 0 then return end
+  sspEmit("scp btn playpause")
+end
+
+-- Preset-Menu user-functions (per-device one-time bind via the Mini's
+-- Preset Menu -> User Functions, mapping each hardware button to one of the
+-- entries below). The pad controls at potIds 9-12 (added in v26) would route
+-- presses directly with no setup, BUT fw v4.1.4 does not dispatch hardware
+-- buttons to preset pads or to any events.* handler (empirically verified:
+-- BUTTONS subscription, every plausible handler name, and a catch-all
+-- onPotTouchChange override all caught nothing on press). So the pads stay
+-- as a forward-looking hedge for any future firmware that wires them, and
+-- this table is the actual working route today. The four entries reuse the
+-- same btn* functions as the pads -- their "value == 0" guard tolerates a
+-- nil arg from a userFunction call (nil == 0 is false, so the action runs).
 preset.userFunctions = {
-  pot1 = { call = pagePrev, name = "Prev", close = true },
-  pot2 = { call = pageNext, name = "Next", close = true },
-  pot3 = { call = zoomOut, name = "Zoom-", close = true },
-  pot4 = { call = zoomIn, name = "Zoom+", close = true }
+  pot1 = { call = btnBack,      name = "Back",       close = true },
+  pot2 = { call = btnNext,      name = "Next",       close = true },
+  pot3 = { call = btnClear,     name = "Clear",      close = true },
+  pot4 = { call = btnPlayPause, name = "Play/Pause", close = true }
 }
 
 local function registerPaint()

@@ -122,6 +122,26 @@ describe("mapInspectorToSurface", () => {
     expect(desc?.fields[5]).toMatchObject({ key: "@rot.0", value: "180.0" }); // rad->deg
     // idx is reassigned sequentially incl. the prepended fields
     expect(desc?.fields.map((f) => f.idx)).toEqual(desc?.fields.map((_, i) => i));
+    // Transform rows carry units: pos=m, rot=deg (ASCII, not "°"), scl=x.
+    // Enabled / Visibility don't get a unit.
+    expect(desc?.fields[0].unit).toBeUndefined();
+    expect(desc?.fields[1].unit).toBeUndefined();
+    expect(desc?.fields[2].unit).toBe("m"); // @pos.0
+    expect(desc?.fields[5].unit).toBe("deg"); // @rot.0
+    expect(desc?.fields[8].unit).toBe("x"); // @scl.0
+  });
+
+  it("propagates def.unit from number params through to the surface field", () => {
+    const desc = mapInspectorToSurface(
+      snap({ size: 1.5, speed: 0 }, [
+        { key: "size", label: "Size", type: "number", precision: 2, unit: "m" },
+        { key: "speed", label: "Speed", type: "number", precision: 1, unit: "m/s" },
+        { key: "ratio", label: "Ratio", type: "number" } // no unit
+      ])
+    );
+    expect(desc?.fields.find((f) => f.key === "size")?.unit).toBe("m");
+    expect(desc?.fields.find((f) => f.key === "speed")?.unit).toBe("m/s");
+    expect(desc?.fields.find((f) => f.key === "ratio")?.unit).toBeUndefined();
   });
 });
 

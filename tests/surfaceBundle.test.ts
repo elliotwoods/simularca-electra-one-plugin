@@ -59,16 +59,31 @@ describe("surface bundle", () => {
       "function detailChanged(",
       "function pagePrev(",
       "function pageNext(",
-      "function zoomOut(",
-      "function zoomIn(",
+      "function btnBack(",
+      "function btnNext(",
+      "function btnSpare(",
+      "function btnPlayPause(",
       "function drawReadout(",
       "function paint(",
       "preset.userFunctions"
     ]) {
       expect(SURFACE_MAIN_LUA).toContain(fn);
     }
-    for (const n of ['name = "Prev"', 'name = "Next"', 'name = "Zoom-"', 'name = "Zoom+"']) {
-      expect(SURFACE_MAIN_LUA).toContain(n);
+    // v27 userFunctions wiring: the table reuses the btn* handlers (one
+    // source of truth for both the dormant pads and the manual-bind route).
+    // Hardware-button dispatch is firmware-locked on fw v4.1.4; this table
+    // is the actual working route after a one-time Preset-Menu bind.
+    for (const entry of [
+      'call = btnBack',
+      'call = btnNext',
+      'call = btnSpare',
+      'call = btnPlayPause',
+      'name = "Back"',
+      'name = "Next"',
+      'name = "Spare"',
+      'name = "Play/Pause"'
+    ]) {
+      expect(SURFACE_MAIN_LUA).toContain(entry);
     }
     // shared discrete editor + toggle/enum picker rendering are present
     for (const fn of [
@@ -78,6 +93,26 @@ describe("surface bundle", () => {
     ]) {
       expect(SURFACE_MAIN_LUA).toContain(fn);
     }
+    // Unit-glyph rendering: dispatcher + composers for the curated set;
+    // anything outside the set falls through to graphics.print text. Wire
+    // tokens are 7-bit ASCII ("deg" not "°", "u" not "μ").
+    for (const fn of [
+      "local function drawDegree(",
+      "local function drawM(",
+      "local function drawX(",
+      "local function drawUnit("
+    ]) {
+      expect(SURFACE_MAIN_LUA).toContain(fn);
+    }
+    // drawUnit dispatches on the curated tokens and is invoked by drawReadout.
+    for (const tok of ['unit == "deg"', 'unit == "m"', 'unit == "x"', 'unit == "s"', 'unit == "d"']) {
+      expect(SURFACE_MAIN_LUA).toContain(tok);
+    }
+    expect(SURFACE_MAIN_LUA).toContain("drawUnit(f.unit");
+    // The SSP A-payload parser MUST take unit from c[10] and opts from c[11]
+    // (any future column reshuffle has to update the host encode in lockstep).
+    expect(SURFACE_MAIN_LUA).toContain("unit = (c[10]");
+    expect(SURFACE_MAIN_LUA).toContain("opts = (c[11]");
     // direct-edit semantic path + highlight + greying are present
     expect(SURFACE_MAIN_LUA).toContain("scp dv ");
     expect(SURFACE_MAIN_LUA).toContain("scp vc ");
@@ -100,6 +135,41 @@ describe("surface bundle", () => {
     expect(SURFACE_MAIN_LUA).not.toContain("function draw7(");
     expect(SURFACE_MAIN_LUA).not.toContain("function drillKnob(");
     expect(SURFACE_MAIN_LUA).not.toContain("function slotChanged(");
+    // Zoom-/Zoom+ removed: the value encoder edits directly, and the
+    // digit-window pan is reached by touching a digit encoder.
+    expect(SURFACE_MAIN_LUA).not.toContain("function zoomOut(");
+    expect(SURFACE_MAIN_LUA).not.toContain("function zoomIn(");
+    expect(SURFACE_MAIN_LUA).not.toContain('name = "Zoom-"');
+    expect(SURFACE_MAIN_LUA).not.toContain('name = "Zoom+"');
+  });
+
+  it("preset JSON has 4 pad controls at potIds 9-12 for hardware buttons 3-6", () => {
+    const preset = JSON.parse(SURFACE_PRESET_JSON) as {
+      controls: Array<{
+        id: number;
+        type: string;
+        name?: string;
+        inputs?: Array<{ potId: number; valueId: string }>;
+        values?: Array<{ function?: string }>;
+      }>;
+    };
+    const pads = preset.controls.filter((c) => c.type === "pad");
+    expect(pads).toHaveLength(4);
+    const byPot = new Map(pads.map((p) => [p.inputs?.[0].potId, p]));
+    expect(byPot.get(9)?.values?.[0].function).toBe("btnBack");
+    expect(byPot.get(10)?.values?.[0].function).toBe("btnNext");
+    expect(byPot.get(11)?.values?.[0].function).toBe("btnSpare");
+    expect(byPot.get(12)?.values?.[0].function).toBe("btnPlayPause");
+    expect(byPot.get(9)?.name).toBe("Back");
+    expect(byPot.get(12)?.name).toBe("Play/Pause");
+  });
+
+  it("Lua emits scp btn <action> for spare/playpause only (back/next are device-local)", () => {
+    expect(SURFACE_MAIN_LUA).toContain('sspEmit("scp btn spare")');
+    expect(SURFACE_MAIN_LUA).toContain('sspEmit("scp btn playpause")');
+    // back/next route through pagePrev/pageNext (no host emit by design)
+    expect(SURFACE_MAIN_LUA).not.toContain('sspEmit("scp btn back")');
+    expect(SURFACE_MAIN_LUA).not.toContain('sspEmit("scp btn next")');
   });
 });
 

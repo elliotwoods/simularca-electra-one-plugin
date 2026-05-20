@@ -133,7 +133,43 @@ export interface ElectraLogEntry {
  *  null disables the firmware gate until then. */
 export const MIN_FIRMWARE: string | null = null;
 
-/** Bumped whenever preset.json or any Lua module changes (SPEC §4.1). v24 =
+/** Bumped whenever preset.json or any Lua module changes (SPEC §4.1). v27 =
+ *  v26 plus a restored `preset.userFunctions` table (Back/Next/Spare/
+ *  Play-Pause) -- the working route on fw v4.1.4 for hardware buttons 3-6,
+ *  requiring a one-time per-device bind via the Mini's Preset Menu. v26's
+ *  pad controls stay in place but were empirically proven dormant on this
+ *  firmware: live debug bridge probes showed hardware-button presses
+ *  emit ZERO MIDI (no SysEx, no CC, no events.*), regardless of pad shape
+ *  (message-less, with stub cc7 message, with/without mode:"momentary"),
+ *  regardless of `events.subscribe(POTS + BUTTONS)`, and regardless of
+ *  candidate handler names (onButtonChange/Press/Down/Up/Click or
+ *  catch-all onPotTouchChange). BUTTONS=32 exists as a Lua global so the
+ *  routing is presumably on Electra's roadmap; pads + dispatch wiring are
+ *  forward-compatible. The userFunctions entries reuse the same btn*
+ *  functions as the pads -- their `value == 0` guard tolerates a nil arg
+ *  from a 0-arg userFunction call (nil == 0 is false). v26 =
+ *  v25 plus hardware-button pads. Mini buttons 3-6 = potIds 9-12 wired via
+ *  four `type:"pad"` preset controls (visible:false, momentary, no MIDI
+ *  message) firing Lua handlers btnBack/btnNext/btnSpare/btnPlayPause.
+ *  Back/Next call pagePrev/pageNext device-side; Spare and Play/Pause emit
+ *  `scp btn <action>` SysEx for host logging (host transport wiring deferred
+ *  -- handleDeviceLine logs ev.action only). Removes the Zoom-/Zoom+
+ *  user-functions and the whole `preset.userFunctions` table -- paging is
+ *  now reachable by hardware button with no per-user Preset-Menu setup. New
+ *  device->host line `scp btn <action>` decoded by decodeDeviceLine ->
+ *  `{type:"button", action}`. Firmware-risk fallback ladder if provision
+ *  NACKs or presses fire nothing on this fw: (i) ship-shape above; (ii) add
+ *  a stub message `{deviceId:1,type:"cc7",parameterNumber:100+(id-10),
+ *  min:0,max:1}` to each pad; (iii) drop `mode:"momentary"`; (iv) try
+ *  `type:"button"`; (v) last resort: poll
+ *  `controls.get(<padId>):getValue():getMessage():getValue()` from Lua. v25 =
+ *  v24 plus per-field UNIT rendering: SSP `A`-payload gains a new column
+ *  (post-precision, pre-options) carrying a short ASCII unit token. The mini
+ *  view appends the token verbatim to the fader name (fmtValue); the zoomed
+ *  7-seg readout calls a new `drawUnit` dispatcher with curated glyphs
+ *  ("deg" → small square; "m" → 3-vert + top-bar lowercase m; "x" → stepped
+ *  diagonal pair; "s"/"d" → reused 7-seg masks) and falls back to firmware
+ *  graphics.print text for any other token (m/s, 1/s, px, %, …). v24 =
  *  v23 with the recenter setter actually FIXED. The mid-reset (both per-turn
  *  `recenter` and the v23 `recenterAll`) called `ctrl:setValue(64)`, but a
  *  Control has no setValue — the nil-method call was silently eaten by pcall,
@@ -164,7 +200,7 @@ export const MIN_FIRMWARE: string | null = null;
  *  v22 = adds the `triangle` cap style (authentic linear-taper hexagon 7-seg;
  *  reuses round's RLE + polygon's transposed vertical stretch). flat/round/
  *  polygon Lua unchanged except this version stamp. */
-export const SURFACE_BUNDLE_VERSION = 24;
+export const SURFACE_BUNDLE_VERSION = 27;
 
 /** Preset name marker used for cheap discovery on the device (SPEC §4.2). */
 export const SURFACE_PRESET_MARKER = "Simularca Surface";

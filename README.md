@@ -27,9 +27,15 @@ browser. The value encoder **directly edits the value** (scaled). A centre
 **custom-graphics** band shows the focused value as a large adaptive
 **7-segment** readout — places outside the value's range are greyed, the
 touched digit is highlighted, and **link lines** join each top encoder to its
-digit — plus a **scrollbar**. **Prev/Next** and **Zoom-/Zoom+** user-functions
-(Preset Menu, or assign to a hardware button/knob in device Settings) page /
-pan. The actor's **Enabled, Visibility, Position, Rotation, Scale** are the
+digit — plus a **scrollbar**. **Back / Next / Spare / Play-Pause** are
+exposed via `preset.userFunctions` and assigned to the Mini's four
+assignable hardware buttons (3-6) with a one-time bind through the
+device's Preset Menu — hardware-button dispatch direct from the preset
+is not supported on fw v4.1.4. (The bundle also ships `type:"pad"`
+controls at potIds 9-12 as a forward-looking hedge for any future
+firmware that wires them up automatically.) The digit-window pan is
+reached by touching a digit encoder. The actor's **Enabled, Visibility,
+Position, Rotation, Scale** are the
 first fields (via a host-bridge extension). No separate DRILL page, no
 encoder-push needed. The host/protocol/`digits` math is fully unit-tested; the
 device-side Lua layout/7-seg scale is tuned on hardware. See `SPEC.md §11`.
