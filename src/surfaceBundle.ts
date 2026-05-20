@@ -8,9 +8,14 @@
 // bottom encoder pans the digit window (zoom); the 4 top encoders are the
 // digit places. Prev/Next user-functions page through >4 fields.
 //
-// Host -> device: Execute-Lua ssp("<payload>"). Device -> host: print() lines
-// (Log SysEx, parsed by sspCodec): `scp vc` (coarse), `scp dv` (digit),
-// `scp focus <absIdx>`. Indices are ABSOLUTE field indices (page-independent).
+// Host -> device: Execute-Lua ssp("<payload>"). Device -> host: the Lua app
+// self-emits each `scp …` line as a SysEx via `midi.sendSysex(0, …)` -- wire
+// form F0 7D 53 53 50 <ascii> F7, parsed host-side by parseSspSysex. Verbs
+// are `scp vc` (coarse), `scp dv` (digit), `scp focus <absIdx>`; indices are
+// ABSOLUTE field indices (page-independent). The earlier print()/firmware-
+// logger Log-SysEx path is dead on fw v4.1.4 (the logger never delivers Log
+// SysEx, even when explicitly enabled) -- self-emitted SysEx is the sole
+// device->host channel.
 //
 // The digit math mirrors src/digits.ts (exhaustively unit-tested). Device-side
 // layout / 7-seg scale / fader-vs-custom coexistence are on-device tunables.
@@ -792,6 +797,40 @@ local function buildEditing(abs)
   editing.ws = clampWS(v == 0 and 0 or msd(v), v, prec)
 end
 
+-- Electra value model (hardware-verified on fw v4.1.4 via the live debug
+-- bridge): controls.get(id) -> Control, which has NO setValue. Control:
+-- getValue() -> ControlValue, whose overrideValue() is VISUAL-ONLY (it does
+-- NOT move the logical value the pot accumulates from -- probed: getValue
+-- stayed 17 after overrideValue(64)). ControlValue:getMessage() -> Message,
+-- and Message:setValue(v) writes the LOGICAL value (probed: a fader went
+-- 17 -> 64). So the endless-encoder mid-reset MUST go through the Message.
+-- The previous code called setValue on the Control itself -- a nil method,
+-- silently eaten by pcall -- which is why recenter never did anything.
+local function setPotMid(id)
+  return pcall(function()
+    local c = controls.get(id)
+    if c ~= nil then
+      c:getValue():getMessage():setValue(64)
+    end
+  end)
+end
+
+-- Snap every rotary (ids 1-8) back to the differential mid so the next delta
+-- starts from a known centre and the fader can travel either way before
+-- pinning. lastPot is re-seeded BEFORE setValue: Message:setValue may
+-- synchronously re-enter valueChanged, and with lastPot already 64 that echo
+-- is delta==0 and returns harmlessly (no recursion, no phantom delta).
+-- discAccum is wiped: a surface/page/focus change invalidates any in-progress
+-- discrete step. Declared before its earliest caller (focusSlot) -- a local
+-- referenced before its declaration resolves to a nil global.
+local function recenterAll()
+  for id = 1, 8 do
+    lastPot[id] = 64
+    setPotMid(id)
+  end
+  discAccum = {}
+end
+
 local function focusSlot(abs)
   if slots[abs] == nil then
     return
@@ -800,6 +839,7 @@ local function focusSlot(abs)
   buildEditing(abs)
   discAccum[abs] = 0
   sspEmit("scp focus " .. abs)
+  recenterAll()
   repaint()
 end
 
@@ -807,13 +847,13 @@ local function emitDigit()
   sspEmit("scp dv " .. focusedIdx .. " " .. string.format("%." .. tostring(editing.prec) .. "f", editing.value))
 end
 
+-- Per-turn mid-reset for the single control just turned. The ctrl arg is
+-- kept for call-site compatibility but unused -- the real setter is by
+-- control id via the Message (see setPotMid). lastPot first for the
+-- re-entrancy reason above.
 local function recenter(ctrl, pot)
-  pcall(function()
-    if ctrl ~= nil and ctrl.setValue ~= nil then
-      ctrl:setValue(64)
-      lastPot[pot] = 64
-    end
-  end)
+  lastPot[pot] = 64
+  setPotMid(pot)
 end
 
 -- ---- protocol ----
@@ -824,6 +864,7 @@ function ssp(cmd)
     pageOffset = 0
     focusedIdx = nil
     editing = nil
+    recenterAll()
     repaint()
     return
   end
@@ -860,6 +901,7 @@ function ssp(cmd)
       focusedIdx = nil
       editing = nil
     end
+    recenterAll()
     repaint()
   elseif head[1] == "V" then
     local idx = tonumber(head[2]) or 0
@@ -868,6 +910,7 @@ function ssp(cmd)
       if focusedIdx == idx and editing ~= nil then
         editing.value = tonumber(head[3]) or editing.value
       end
+      recenterAll()
       repaint()
     end
   end
@@ -1054,6 +1097,7 @@ pcall(function()
         elseif highlightedKnob == potId - 1 then
           highlightedKnob = nil
         end
+        recenterAll()
         repaint()
       end
     end
@@ -1070,6 +1114,7 @@ local function applyPage(off)
     off = maxOff
   end
   pageOffset = off
+  recenterAll()
   repaint()
 end
 
@@ -1117,14 +1162,17 @@ registerPaint()
 
 function preset.onLoad()
   registerPaint()
+  recenterAll()
 end
 
 function preset.onReady()
   registerPaint()
+  recenterAll()
   sspEmit("simularca:ready bundle=" .. BUNDLE_VERSION)
 end
 
 function preset.onEnter()
+  recenterAll()
   sspEmit("simularca:ready bundle=" .. BUNDLE_VERSION)
 end
 `;

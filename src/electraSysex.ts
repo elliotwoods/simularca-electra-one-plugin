@@ -112,28 +112,12 @@ export function buildExecuteLua(luaCommand: string): number[] {
   return frameElectraSysex([...ELECTRA_CMD.EXECUTE_LUA, ...asciiBytes(luaCommand)]);
 }
 
-/** Electra log destination ports (Electra MIDI impl: `14 7D`). */
-export const ELECTRA_LOG_PORT = { PORT_1: 0x00, PORT_2: 0x01, CTRL: 0x02 } as const;
-
-/**
- * Enable/disable the device logger (Electra MIDI impl: `7F 7D status 00`).
- * CRITICAL: the firmware logger is DISABLED by default for performance, and
- * Lua `print()` output — this plugin's entire device→host SSP channel — is
- * delivered ONLY as Log SysEx. Without this the device never talks back.
- */
-export function buildSetLogger(enabled: boolean): number[] {
-  return frameElectraSysex([0x7f, 0x7d, enabled ? 0x01 : 0x00, 0x00]);
-}
-
-/**
- * Route logs to a port (Electra MIDI impl: `14 7D port reserved`). Control /
- * SSP traffic uses the CTRL port, so logs must go there for our input
- * listener to receive them (CTRL is the firmware default; sent explicitly in
- * case a user changed it).
- */
-export function buildSetLogPort(port: number): number[] {
-  return frameElectraSysex([0x14, 0x7d, port & 0x7f, 0x00]);
-}
+/* The firmware-logger control SysEx (`buildSetLogger`/`buildSetLogPort`) and
+ * destination-port enum (`ELECTRA_LOG_PORT`) plus the `parseLog` parser were
+ * removed: empirically the logger never delivers Log SysEx on fw v4.1.4
+ * (Execute-Lua `print` only ACKs, never a LOG frame), so the connect-time
+ * enable handshake was dead code. `ELECTRA_CMD.LOG` is kept as a protocol
+ * reference. */
 
 /* ---------------------------------------------------------------- parsers */
 
@@ -221,13 +205,6 @@ export function parseAck(message: readonly number[]): { ok: boolean } | null {
   return null;
 }
 
-export function parseLog(message: readonly number[]): string | null {
-  if (electraMessageKind(message) !== "LOG") {
-    return null;
-  }
-  return payloadTextAfterCmd(message);
-}
-
 /**
  * Self-emitted device→host SSP SysEx — the logger-INDEPENDENT channel. The
  * Lua app sends each `scp …` line via `midi.sendSysex`; the firmware
@@ -236,8 +213,8 @@ export function parseLog(message: readonly number[]): string | null {
  *   fallback: F0 00 21 45 7D 53 <ascii> F7 (Electra mfr id + op pair 7D 53,
  *             which collides with no ELECTRA_CMD pair)
  * Returns the ASCII payload (no F0/F7), or null when not an SSP frame. By
- * construction disjoint from isElectraSysex / electraMessageKind / parseLog,
- * so it never shadows a firmware response.
+ * construction disjoint from isElectraSysex / electraMessageKind / any
+ * ELECTRA_CMD op pair, so it never shadows a firmware response.
  */
 export function parseSspSysex(message: readonly number[]): string | null {
   const n = message.length;

@@ -133,7 +133,22 @@ export interface ElectraLogEntry {
  *  null disables the firmware gate until then. */
 export const MIN_FIRMWARE: string | null = null;
 
-/** Bumped whenever preset.json or any Lua module changes (SPEC §4.1). v21 =
+/** Bumped whenever preset.json or any Lua module changes (SPEC §4.1). v24 =
+ *  v23 with the recenter setter actually FIXED. The mid-reset (both per-turn
+ *  `recenter` and the v23 `recenterAll`) called `ctrl:setValue(64)`, but a
+ *  Control has no setValue — the nil-method call was silently eaten by pcall,
+ *  so recenter NEVER worked (masked until device->host was fixed in v21).
+ *  Hardware-probed the real API on fw v4.1.4: the logical value lives on
+ *  controls.get(id):getValue():getMessage(); `Message:setValue(64)` moves it
+ *  (ControlValue:overrideValue is visual-only). New `setPotMid(id)` helper
+ *  used by both; `lastPot[id]=64` set BEFORE the write for re-entrancy. v23 =
+ *  v22 plus `recenterAll()` — every rotary (ids 1-8) is snapped back to the
+ *  differential mid (64) with `lastPot` re-seeded in lockstep and `discAccum`
+ *  wiped, on every structural/page/focus/lifecycle update AND host value push
+ *  (ssp C/A/V, applyPage, focusSlot, touch-highlight, onLoad/onReady/onEnter).
+ *  A stale absolute fader position from a prior actor/page can no longer
+ *  produce a phantom delta or start an encoder near a 0/127 limit. Per-turn
+ *  behaviour unchanged. v21 =
  *  v20 with the device->host port fix: sspEmit now calls
  *  `midi.sendSysex(0, t)` instead of `midi.sendSysex(PORT_CTRL, t)`.
  *  `PORT_CTRL` is not a defined Lua global on fw v4.1.4, so the pcall'd send
@@ -149,7 +164,7 @@ export const MIN_FIRMWARE: string | null = null;
  *  v22 = adds the `triangle` cap style (authentic linear-taper hexagon 7-seg;
  *  reuses round's RLE + polygon's transposed vertical stretch). flat/round/
  *  polygon Lua unchanged except this version stamp. */
-export const SURFACE_BUNDLE_VERSION = 22;
+export const SURFACE_BUNDLE_VERSION = 24;
 
 /** Preset name marker used for cheap discovery on the device (SPEC §4.2). */
 export const SURFACE_PRESET_MARKER = "Simularca Surface";

@@ -5,12 +5,9 @@ import {
   buildExecuteLua,
   buildRequestLua,
   buildRequestPreset,
-  buildSetLogPort,
-  buildSetLogger,
   buildSwitchPresetSlot,
   buildUploadLua,
   buildUploadPreset,
-  ELECTRA_LOG_PORT,
   bytesToHex,
   electraMessageKind,
   electraPayload,
@@ -21,7 +18,6 @@ import {
   parseAck,
   parseBundleVersion,
   parseDeviceInfoResponse,
-  parseLog,
   parseLuaResponse,
   parsePresetResponse,
   parseSspSysex
@@ -75,16 +71,6 @@ describe("command builders", () => {
     expect(buildExecuteLua("ssp(1)").slice(4, 6)).toEqual([0x08, 0x0d]);
   });
 
-  it("logger enable/disable is 7F 7D status 00", () => {
-    expect(buildSetLogger(true)).toEqual([0xf0, 0x00, 0x21, 0x45, 0x7f, 0x7d, 0x01, 0x00, 0xf7]);
-    expect(buildSetLogger(false)).toEqual([0xf0, 0x00, 0x21, 0x45, 0x7f, 0x7d, 0x00, 0x00, 0xf7]);
-  });
-
-  it("set-log-port is 14 7D port 00, CTRL = 0x02", () => {
-    expect(buildSetLogPort(ELECTRA_LOG_PORT.CTRL)).toEqual([
-      0xf0, 0x00, 0x21, 0x45, 0x14, 0x7d, 0x02, 0x00, 0xf7
-    ]);
-  });
 });
 
 describe("response parsers", () => {
@@ -103,7 +89,7 @@ describe("response parsers", () => {
     expect(parseDeviceInfoResponse([0x90, 0x40])).toBeNull();
   });
 
-  it("lua + preset + ack + log", () => {
+  it("lua + preset + ack", () => {
     const lua = "local BUNDLE_VERSION = 7\nfunction f() end";
     expect(parseLuaResponse(frameElectraSysex([0x01, 0x0c, ...asciiBytes(lua)]))).toBe(lua);
     expect(parseLuaResponse(frameElectraSysex([0x02, 0x0c]))).toBeNull();
@@ -115,10 +101,6 @@ describe("response parsers", () => {
     expect(parseAck(frameElectraSysex([0x7e, 0x01, 0, 0]))).toEqual({ ok: true });
     expect(parseAck(frameElectraSysex([0x7e, 0x00, 0, 0]))).toEqual({ ok: false });
     expect(parseAck(buildRequestLua())).toBeNull();
-
-    expect(parseLog(frameElectraSysex([0x7f, 0x00, ...asciiBytes("simularca:ready")]))).toBe(
-      "simularca:ready"
-    );
   });
 
   it("parseBundleVersion", () => {
@@ -178,7 +160,6 @@ describe("parseSspSysex (self-emitted device→host channel)", () => {
       expect(parseAck(frame)).toBeNull();
       expect(parseLuaResponse(frame)).toBeNull();
       expect(parsePresetResponse(frame)).toBeNull();
-      expect(parseLog(frame)).toBeNull();
     }
     expect(isElectraSysex(primary("x"))).toBe(false); // not Electra mfr id
     expect(electraMessageKind(fallback("x"))).toBe("unknown"); // op pair 7D 53 unclaimed

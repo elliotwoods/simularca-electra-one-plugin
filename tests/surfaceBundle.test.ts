@@ -82,6 +82,20 @@ describe("surface bundle", () => {
     expect(SURFACE_MAIN_LUA).toContain("scp dv ");
     expect(SURFACE_MAIN_LUA).toContain("scp vc ");
     expect(SURFACE_MAIN_LUA).toContain("highlightedKnob");
+    // recenterAll(): the differential-mid reset is defined once and invoked
+    // at every surface/page/focus/lifecycle update + host value push.
+    // 10 = 1 definition occurrence + 9 invocations (ssp C/A/V, applyPage,
+    // focusSlot, touch-highlight, onLoad/onReady/onEnter).
+    expect(SURFACE_MAIN_LUA).toContain("local function recenterAll(");
+    expect((SURFACE_MAIN_LUA.match(/recenterAll\(\)/g) ?? []).length).toBe(10);
+    // Recenter MUST go through the Message (hardware-verified API): a Control
+    // has no setValue and ControlValue:overrideValue is visual-only. Guard the
+    // exact regression where recenter called a nil Control method (silently
+    // pcall-eaten -> recenter never worked).
+    expect(SURFACE_MAIN_LUA).toContain("local function setPotMid(");
+    expect(SURFACE_MAIN_LUA).toContain(":getValue():getMessage():setValue(64)");
+    expect(SURFACE_MAIN_LUA).not.toContain("ctrl:setValue(64)");
+    expect(SURFACE_MAIN_LUA).not.toContain("c:setValue(64)");
     expect(SURFACE_MAIN_LUA).not.toContain("pages.display");
     expect(SURFACE_MAIN_LUA).not.toContain("function draw7(");
     expect(SURFACE_MAIN_LUA).not.toContain("function drillKnob(");
@@ -111,7 +125,12 @@ describe("buildSurfaceLua render-option variants", () => {
       const lua = buildSurfaceLua(v);
       expect(() => asciiBytes(lua)).not.toThrow();
       expect(parseBundleVersion(lua)).toBe(SURFACE_BUNDLE_VERSION);
-      for (const fn of ["function drawReadout(", "function paint(", "function drawSeg("]) {
+      for (const fn of [
+        "function drawReadout(",
+        "function paint(",
+        "function drawSeg(",
+        "local function recenterAll("
+      ]) {
         expect(lua).toContain(fn);
       }
     }

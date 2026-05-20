@@ -28,12 +28,9 @@ import {
   buildExecuteLua,
   buildRequestLua,
   buildRequestPreset,
-  buildSetLogPort,
-  buildSetLogger,
   buildSwitchPresetSlot,
   buildUploadLua,
   buildUploadPreset,
-  ELECTRA_LOG_PORT,
   bytesToHex,
   hexToBytes,
   isElectraSysex,
@@ -41,7 +38,6 @@ import {
   parseAck,
   parseBundleVersion,
   parseDeviceInfoResponse,
-  parseLog,
   parseSspSysex,
   parseLuaResponse,
   parsePresetResponse
@@ -555,9 +551,9 @@ export class ElectraSession {
   }
 
   /**
-   * Decode one device SSP line (from the self-emitted SSP SysEx, or the
-   * legacy logger Log SysEx fallback) and dispatch it. `scp hb …` heartbeats
-   * fall through decodeDeviceLine to a `log` event — surfaced, never applied.
+   * Decode one device SSP line (carried in the self-emitted SSP SysEx) and
+   * dispatch it. `scp hb …` heartbeats fall through decodeDeviceLine to a
+   * `log` event — surfaced, never applied.
    */
   private handleDeviceLine(text: string): void {
     const ev = decodeDeviceLine(text);
@@ -573,9 +569,9 @@ export class ElectraSession {
     } else if (ev?.type === "log") {
       this.log("info", `device: ${ev.text}`);
     }
-    // Unrecognised lines are generic firmware logger chatter (ElectraApp:,
-    // preset load, etc.) when the diagnostics logger is on — dropped so the
-    // panel stays focused on the SSP conversation.
+    // Unrecognised lines (none in normal operation now that the firmware
+    // logger is never enabled) are dropped silently — kept defensive so a
+    // future firmware revival of any logger path can't crash the panel.
   }
 
   /* ----------------------------------------------------------- lifecycle */
@@ -624,20 +620,15 @@ export class ElectraSession {
         outputs: handle.ports.outputs.map((p) => p.name)
       };
 
-      // Persistent inbound monitor + device SSP surfacing. Device→host is the
-      // self-emitted SSP SysEx (parseSspSysex), logger-independent; the logger
-      // Log SysEx is a kept fallback. The two byte patterns are disjoint, so
-      // at most one dispatch per message.
+      // Persistent inbound monitor + device SSP surfacing. Device→host is
+      // the self-emitted SSP SysEx (parseSspSysex) — the sole channel on
+      // fw v4.1.4; the print()/firmware-logger Log-SysEx path is dead and
+      // the connect-time enable handshake has been removed.
       handle.onMessage((bytes) => {
         this.monitor("in", bytes);
         const ssp = parseSspSysex(bytes);
         if (ssp !== null) {
           this.handleDeviceLine(ssp);
-        } else {
-          const logText = parseLog(bytes);
-          if (logText) {
-            this.handleDeviceLine(logText);
-          }
         }
         this.emit();
       });
@@ -647,14 +638,6 @@ export class ElectraSession {
           void this.start();
         }
       });
-
-      // Diagnostics only — device→host now uses the self-emitted SSP SysEx
-      // (parseSspSysex), which works with the firmware logger OFF. We still
-      // enable it (pinned to the CTRL port) so firmware chatter and the
-      // legacy Log-SysEx fallback stay visible while iterating.
-      this.sendMonitored(buildSetLogPort(ELECTRA_LOG_PORT.CTRL));
-      this.sendMonitored(buildSetLogger(true));
-      this.log("info", "Enabled device logger on CTRL (diagnostics only; device→host uses SSP SysEx).");
 
       this.set("checking-firmware", `Connected to ${handle.inputName}. Requesting device info…`);
       const info = await this.awaitResponse(

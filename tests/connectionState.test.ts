@@ -9,6 +9,10 @@ import {
 import { SURFACE_BUNDLE_VERSION, SURFACE_MAIN_LUA } from "../src/surfaceBundle";
 import type { WebMidiHandle } from "../src/webMidiService";
 
+// Self-emitted SSP SysEx — the sole device→host channel on fw v4.1.4. Tests
+// that exercise device-line dispatch build inbound frames with this helper.
+const sspFrame = (s: string) => [0xf0, 0x7d, 0x53, 0x53, 0x50, ...asciiBytes(s), 0xf7];
+
 interface DeviceOpts {
   deviceInfo?: Record<string, unknown> | null;
   lua?: string | null; // null => no request-lua reply
@@ -261,7 +265,7 @@ describe("surface (SSP)", () => {
     expect(out.some((h) => h.startsWith("f0 00 21 45 08 0d"))).toBe(true); // Execute-Lua ssp(...)
 
     // Device encoder moves slot 1 (size) to full -> max 10.
-    dev.emit(frameElectraSysex([0x7f, 0x00, ...asciiBytes("scp vc 1 127")]));
+    dev.emit(sspFrame("scp vc 1 127"));
     await new Promise((r) => setTimeout(r));
     expect(applied.at(-1)).toEqual(["a1", "size", 10, { history: false }]);
   });
@@ -274,15 +278,15 @@ describe("surface (SSP)", () => {
     await s.start();
     s.setSelectedActor(SNAP);
 
-    dev.emit(frameElectraSysex([0x7f, 0x00, ...asciiBytes("scp dv 1 7.5")]));
+    dev.emit(sspFrame("scp dv 1 7.5"));
     await new Promise((r) => setTimeout(r));
     expect(applied.at(-1)).toEqual(["a1", "size", 7.5, { history: false }]);
 
-    dev.emit(frameElectraSysex([0x7f, 0x00, ...asciiBytes("scp dv 1 99")]));
+    dev.emit(sspFrame("scp dv 1 99"));
     await new Promise((r) => setTimeout(r));
     expect(applied.at(-1)).toEqual(["a1", "size", 10, { history: false }]); // clamped to max
 
-    dev.emit(frameElectraSysex([0x7f, 0x00, ...asciiBytes("scp focus 1")]));
+    dev.emit(sspFrame("scp focus 1"));
     await new Promise((r) => setTimeout(r));
     expect(s.getState().focusedSlot).toBe(1);
   });
@@ -303,19 +307,19 @@ describe("surface (SSP)", () => {
     //   0 ranged number, 1 rangeless number, 2 integer, 3 select(list).
     // Ranged maps raw 127 across [min,max]; the two rangeless numbers have
     // no min/max so decodeDeviceRaw returns the raw 0..127 directly.
-    dev.emit(frameElectraSysex([0x7f, 0x00, ...asciiBytes("scp vc 0 127")]));
+    dev.emit(sspFrame("scp vc 0 127"));
     await new Promise((r) => setTimeout(r));
     expect(s.getState().testSurface?.tRanged).toBe(100);
 
-    dev.emit(frameElectraSysex([0x7f, 0x00, ...asciiBytes("scp vc 1 127")]));
+    dev.emit(sspFrame("scp vc 1 127"));
     await new Promise((r) => setTimeout(r));
     expect(s.getState().testSurface?.tRangeless).toBe(127);
 
-    dev.emit(frameElectraSysex([0x7f, 0x00, ...asciiBytes("scp vc 2 127")]));
+    dev.emit(sspFrame("scp vc 2 127"));
     await new Promise((r) => setTimeout(r));
     expect(s.getState().testSurface?.tInt).toBe(127);
 
-    dev.emit(frameElectraSysex([0x7f, 0x00, ...asciiBytes("scp vc 3 127")]));
+    dev.emit(sspFrame("scp vc 3 127"));
     await new Promise((r) => setTimeout(r));
     expect(s.getState().testSurface?.tSelect).toBe("Delta");
 
@@ -342,9 +346,6 @@ describe("surface (SSP)", () => {
       .join("");
     expect(body).toBe('ssp("C")');
   });
-
-  // Self-emitted SSP SysEx (the logger-independent device→host channel).
-  const sspFrame = (s: string) => [0xf0, 0x7d, 0x53, 0x53, 0x50, ...asciiBytes(s), 0xf7];
 
   it("applies device edits delivered as self-emitted SSP SysEx", async () => {
     const dev = makeDevice({ deviceInfo: GOOD_INFO, lua: SURFACE_MAIN_LUA });

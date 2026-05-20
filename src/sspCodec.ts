@@ -6,11 +6,13 @@
 //   ASCII unit/record separators (0x1F / 0x1E) — control chars are 7-bit and
 //   are stripped from sanitised labels/values so they never collide.
 // Device → host: the Lua app self-emits each `scp <verb> <args…>` line as a
-//   SysEx via `midi.sendSysex` — wire form `F0 7D 53 53 50 <ascii> F7`
-//   (parsed by parseSspSysex in electraSysex.ts). This does NOT depend on the
-//   firmware logger. Legacy path: the same lines also arrive as logger Log
-//   SysEx (`7F 00`, `<ms> lua:`-prefixed) when the logger is enabled — kept
-//   as a fallback; decodeDeviceLine tolerates both prefixed and bare lines.
+//   SysEx via `midi.sendSysex(0, …)` — wire form `F0 7D 53 53 50 <ascii> F7`
+//   (parsed by parseSspSysex in electraSysex.ts). This is the SOLE
+//   device→host channel: the earlier print()/firmware-logger Log-SysEx path
+//   is dead on fw v4.1.4 (the logger never delivers Log SysEx even when
+//   explicitly enabled). decodeDeviceLine still tolerates a leading
+//   `<ms> ` + `lua:` prefix as cheap defensive parsing in case a future
+//   firmware revives that path, but no live code depends on it.
 
 export type SurfaceSlotKind = "toggle" | "number" | "list" | "readonly";
 
@@ -141,12 +143,14 @@ export type DeviceEvent =
   | { type: "focus"; idx: number }
   | { type: "log"; text: string };
 
-/** Parse one device `print()` line. Returns null for unrelated log text. */
+/** Parse one device SSP line. Returns null for unrelated text. */
 export function decodeDeviceLine(line: string): DeviceEvent | null {
-  // Electra Log SysEx text is "<ms-from-start> <message>", and print() output
-  // is additionally prefixed "lua:" (Electra docs). Strip both so the terse
-  // SSP grammar below stays anchored. Bare "scp …" lines (the unit tests)
-  // start with a letter, so neither strip touches them.
+  // Defensive: if a future firmware revives the print()/logger path, Log
+  // SysEx text is "<ms-from-start> <message>" with print() additionally
+  // prefixed "lua:" — tolerate both so the SSP grammar stays anchored. The
+  // live path emits bare lines via parseSspSysex (no prefix), so this is a
+  // no-op in practice; bare "scp …" lines start with a letter and neither
+  // strip touches them.
   const t = line
     .trim()
     .replace(/^\d+\s+/, "")
