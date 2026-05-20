@@ -1625,6 +1625,23 @@ function ssp(cmd)
   local recs = splitc(cmd, RS)
   local head = splitc(recs[1] or "", US)
   if head[1] == "A" then
+    -- Capture identity of the currently focused slot (if any) so we can
+    -- re-attach focus to the same logical field after the descriptor is
+    -- rebuilt. Background (v43): the host sends a full SET_ACTOR whenever
+    -- the field LIST changes -- e.g. changing the Beam Emitter Array
+    -- shader (beamType) flips the visibleWhen of many sibling params, so
+    -- the descriptor structure differs even though the actor and the
+    -- focused field haven't gone away. The previous unconditional clear
+    -- kicked the user out of zoom mode in exactly that case. The wire
+    -- format doesn't carry the parameter key, so we identify by
+    -- (kind,label) -- unique within a real surface.
+    local prevFocusKind = nil
+    local prevFocusLabel = nil
+    if focusedIdx ~= nil and slots[focusedIdx] ~= nil then
+      prevFocusKind = slots[focusedIdx].kind
+      prevFocusLabel = slots[focusedIdx].label
+    end
+
     slots = {}
     local n = 0
     for r = 2, #recs do
@@ -1661,15 +1678,48 @@ function ssp(cmd)
     if pageOffset > maxOff then
       pageOffset = maxOff
     end
-    -- Every SET_ACTOR is treated as a fresh focus context. A guarded clear
-    -- (only when the old slot vanished) would leave the centre band zoomed
-    -- on a DIFFERENT actor's field at the same absolute index whenever the
-    -- new actor still has a field there -- common in practice.
-    focusedIdx = nil
-    editing = nil
-    recenterAll()
-    reconfigureEncoders()
-    reconfigureButtons()
+
+    -- Try to re-locate the previously focused field in the new descriptor.
+    -- An unrelated actor swap has fresh labels at every index, so this
+    -- naturally clears focus; only intra-actor schema changes (the case
+    -- that prompted the fix) end up restoring.
+    local restoredIdx = nil
+    if prevFocusLabel ~= nil then
+      for i = 0, nslots - 1 do
+        local s = slots[i]
+        if s ~= nil and s.kind == prevFocusKind and s.label == prevFocusLabel then
+          restoredIdx = i
+          break
+        end
+      end
+    end
+
+    if restoredIdx ~= nil then
+      focusedIdx = restoredIdx
+      buildEditing(restoredIdx)
+      -- Keep the restored field on the visible 4-slot window; if it moved
+      -- to a different page, scroll to a page that contains it.
+      if focusedIdx < pageOffset or focusedIdx >= pageOffset + 4 then
+        pageOffset = math.max(0, math.min(maxOff, focusedIdx - (focusedIdx % 4)))
+      end
+      recenterAll()
+      discAccum[restoredIdx] = 0
+      reconfigureEncoders()
+      reconfigureButtons()
+      -- Notify the host that focus moved (or stayed) at the new index so
+      -- the inspector's focused-slot hint matches the device state.
+      sspEmit("scp focus " .. restoredIdx)
+    else
+      focusedIdx = nil
+      editing = nil
+      recenterAll()
+      reconfigureEncoders()
+      reconfigureButtons()
+      -- If we used to be focused but the field is gone, tell the host.
+      if prevFocusLabel ~= nil then
+        sspEmit("scp focus -1")
+      end
+    end
     repaint()
     refreshSlotColors()
   elseif head[1] == "V" then

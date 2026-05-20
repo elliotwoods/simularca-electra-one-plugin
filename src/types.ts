@@ -328,8 +328,24 @@ export const MIN_FIRMWARE: string | null = null;
  *  the firmware logger (self-emitted SSP SysEx) + the `scp hb …` heartbeat.
  *  v22 = adds the `triangle` cap style (authentic linear-taper hexagon 7-seg;
  *  reuses round's RLE + polygon's transposed vertical stretch). flat/round/
- *  polygon Lua unchanged except this version stamp. */
-export const SURFACE_BUNDLE_VERSION = 42;
+ *  polygon Lua unchanged except this version stamp.
+ *  v43 = v42 with the SET_ACTOR focus-preservation fix. v28 made SET_ACTOR
+ *  an unconditional `focusedIdx = nil` to avoid the guarded-clear failure
+ *  mode where focus stuck to a DIFFERENT actor's field at the same absolute
+ *  index. But that throws away focus on every intra-actor schema change too
+ *  -- which is what happens when a Beam Emitter Array `beamType` change
+ *  flips a dozen sibling params' `visibleWhen`, the host re-emits a full
+ *  SET_ACTOR, and the user is silently kicked out of the zoomed digit
+ *  editor. v43 re-introduces a guarded clear keyed on (kind, label) of the
+ *  previously focused slot -- still unique enough to make actor swaps clear
+ *  focus naturally (every field gets a fresh label), while preserving zoom
+ *  through schema mutations on the same actor. On restore, focusedIdx is
+ *  re-pointed at the new index, pageOffset is scrolled to keep the field
+ *  visible, `discAccum` is re-seeded, the host gets a fresh `scp focus
+ *  <idx>` so its inspector hint stays in sync. If the focused field is
+ *  gone from the new descriptor we fall back to the v28 clear path plus
+ *  `scp focus -1`. */
+export const SURFACE_BUNDLE_VERSION = 43;
 
 /** Preset name marker used for cheap discovery on the device (SPEC §4.2). */
 export const SURFACE_PRESET_MARKER = "Simularca Surface";

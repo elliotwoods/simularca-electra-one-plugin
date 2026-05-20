@@ -299,6 +299,22 @@ describe("surface bundle", () => {
     expect(SURFACE_MAIN_LUA).toContain('sspEmit("scp focus -1")');
   });
 
+  it("v43 SET_ACTOR preserves zoom on intra-actor schema change via (kind,label) match", () => {
+    // The previous unconditional `focusedIdx = nil` on every SET_ACTOR
+    // kicked the user out of zoom whenever a sibling param's visibleWhen
+    // flipped (e.g. Beam Emitter Array beamType). v43 captures the
+    // focused slot's (kind,label) before the parse, re-locates it in the
+    // new descriptor, and either restores focus + emits a fresh
+    // `scp focus <idx>` or falls back to `scp focus -1`.
+    expect(SURFACE_MAIN_LUA).toMatch(/prevFocusKind\s*=\s*slots\[focusedIdx\]\.kind/);
+    expect(SURFACE_MAIN_LUA).toMatch(/prevFocusLabel\s*=\s*slots\[focusedIdx\]\.label/);
+    // The restore search compares both fields.
+    expect(SURFACE_MAIN_LUA).toMatch(/s\.kind\s*==\s*prevFocusKind\s+and\s+s\.label\s*==\s*prevFocusLabel/);
+    // Both the restore and the clear paths notify the host.
+    expect(SURFACE_MAIN_LUA).toContain('sspEmit("scp focus " .. restoredIdx)');
+    expect(SURFACE_MAIN_LUA).toContain('sspEmit("scp focus -1")');
+  });
+
   it("Lua emits scp btn reset <idx> and scp btn playpause (v37)", () => {
     // v37: btnReset emits the focused slot index so the host applies the
     // declared default. Play/Pause is unchanged. Clear/Back/Next/Spare are
