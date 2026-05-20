@@ -33,6 +33,7 @@ describe("surface bundle", () => {
         pageId: number;
         controlSetId: number;
         visible?: boolean;
+        color?: string;
         inputs?: Array<{ potId: number; valueId: string }>;
         values?: Array<{ function?: string }>;
       }>;
@@ -51,6 +52,11 @@ describe("surface bundle", () => {
     detail.forEach((c, i) => expect(c.inputs?.[0]).toEqual({ potId: i + 1, valueId: "value" }));
     value.forEach((c, i) => expect(c.inputs?.[0]).toEqual({ potId: i + 5, valueId: "value" }));
     expect(custom[0].inputs).toBeUndefined(); // not encoder-bound
+
+    // v42: all 8 faders ship with the subtle dark baseline (33455C = COL_GREY).
+    // The bottom row dynamically brightens via refreshSlotColors when a slot's
+    // value diverges from a declared default; the top row stays dark forever.
+    [...detail, ...value].forEach((c) => expect(c.color).toBe("33455C"));
   });
 
   it("Lua has the split-row + paging + readout functions, not the old ones", () => {
@@ -208,6 +214,20 @@ describe("surface bundle", () => {
     expect(SURFACE_MAIN_LUA).toContain('c1:setName("")');
     expect(SURFACE_MAIN_LUA).toMatch(/c:setVisible\(false\)/);
     expect(SURFACE_MAIN_LUA).toMatch(/c:setVisible\(true\)/);
+    // v42: refreshSlotColors is defined and re-invoked at every value-change
+    // / page-shift site so the bottom-row fader colours reflect "value
+    // diverges from declared default". Definition + at least ssp A / ssp V
+    // / ssp C / valueChanged (3 branches) / detailChanged (3 branches) /
+    // applyPage / preset.onLoad / onReady / onEnter — comfortably >= 8
+    // invocations. Lower-bound assertion so future call-site nudges don't
+    // break the test.
+    expect(SURFACE_MAIN_LUA).toContain("local function refreshSlotColors(");
+    const colorCalls = (SURFACE_MAIN_LUA.match(/refreshSlotColors\(\)/g) ?? []).length;
+    expect(colorCalls).toBeGreaterThanOrEqual(8);
+    // F-record parser stores defaultValue from c[14] so refreshSlotColors
+    // can compare it against f.value. hasDefault still comes from c[13].
+    expect(SURFACE_MAIN_LUA).toContain('hasDefault = (c[13] == "1")');
+    expect(SURFACE_MAIN_LUA).toMatch(/defaultValue = .*c\[14\]/);
   });
 
   it("preset JSON has 2 pad controls (Reset, Play/Pause) at potIds 11-12 (hw buttons 5-6)", () => {

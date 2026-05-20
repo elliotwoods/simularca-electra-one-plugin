@@ -133,7 +133,23 @@ export interface ElectraLogEntry {
  *  null disables the firmware gate until then. */
 export const MIN_FIRMWARE: string | null = null;
 
-/** Bumped whenever preset.json or any Lua module changes (SPEC §4.1). v36 =
+/** Bumped whenever preset.json or any Lua module changes (SPEC §4.1). v42 =
+ *  rotary colour rework + Reset device-sync fix. Faders default to a
+ *  subtle dark `33455C` (was solid white) -- they're a "hack" needed only
+ *  for the CC plumbing, and the real UI is the custom centre band.
+ *  refreshSlotColors() runs after every value-change / page-shift and
+ *  brightens bottom-row faders (ids 5-8) when their visible slot's value
+ *  diverges from a declared default. F-record parser now also reads c[14]
+ *  into slots[idx].defaultValue (was already on the wire, just unused).
+ *  Host-side: applyDeviceReset no longer sets suppressKey/suppressUntil --
+ *  the Reset pad emits a request, the device doesn't self-update, so the
+ *  echo window was incorrectly blocking the host's setFieldValueCommand
+ *  back to the device. v41 =
+ *  bumps `PAGE_SENS` from 2 to 4 in surfaceBundle.ts -- paging through
+ *  >4-field actors via unfocused-mode encoder 1 now requires 4 detents per
+ *  page change (v39's 2 was too sensitive in practice). Single Lua constant;
+ *  no protocol or layout change. (v37-v40 doc entries were skipped; this is
+ *  the first new doc entry since v36.) v36 =
  *  v35 with the page encoder REVERTED to delta-based paging (the same
  *  per-detent pattern every other encoder uses). The v33/v35 absolute-
  *  mapping attempts ping-ponged because applyPage -> recenterAll ->
@@ -313,7 +329,7 @@ export const MIN_FIRMWARE: string | null = null;
  *  v22 = adds the `triangle` cap style (authentic linear-taper hexagon 7-seg;
  *  reuses round's RLE + polygon's transposed vertical stretch). flat/round/
  *  polygon Lua unchanged except this version stamp. */
-export const SURFACE_BUNDLE_VERSION = 40;
+export const SURFACE_BUNDLE_VERSION = 42;
 
 /** Preset name marker used for cheap discovery on the device (SPEC §4.2). */
 export const SURFACE_PRESET_MARKER = "Simularca Surface";

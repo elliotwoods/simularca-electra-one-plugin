@@ -35,6 +35,46 @@ function formatNumber(value: unknown, precision?: number): string {
   return typeof precision === "number" ? n.toFixed(precision) : String(n);
 }
 
+/**
+ * Mirror of the host's `inferDisplayPrecision` in
+ * `src/ui/widgets/numberEditing.ts`: when a `number` ParameterDefinition has no
+ * explicit `precision`, infer it from the `step` value (count the decimals).
+ *
+ * Without this, fields declared as `{ type: "number", step: 0.05, unit: "m" }`
+ * (no precision) — the canonical curve-actor "Radius" pattern — were sent to
+ * the device with `precision: undefined`, so `formatNumber` fell through to
+ * `String(n)` and the device's mini-view rendered "1" instead of "1.00",
+ * and the digit editor had no fractional digits to scrub. The main inspector
+ * uses 2 dp (inferred from `0.05`); the Electra surface now matches.
+ *
+ * Rule: explicit precision wins. Otherwise: `|step| >= 1` → 0; sub-1 step →
+ * decimals in the canonical string form (including scientific notation
+ * `1e-3` → 3). Undefined when no signal is available.
+ */
+function inferPrecision(precision?: number, step?: number): number | undefined {
+  if (precision !== undefined && precision >= 0) {
+    return precision;
+  }
+  if (!step || !Number.isFinite(step)) {
+    return undefined;
+  }
+  const normalized = Math.abs(step);
+  if (normalized >= 1) {
+    return 0;
+  }
+  const asText = normalized.toString();
+  const scientificMatch = asText.match(/e-(\d+)$/i);
+  if (scientificMatch) {
+    const exponent = Number.parseInt(scientificMatch[1] ?? "0", 10);
+    return Number.isFinite(exponent) ? exponent : undefined;
+  }
+  const decimalIndex = asText.indexOf(".");
+  if (decimalIndex === -1) {
+    return undefined;
+  }
+  return asText.length - decimalIndex - 1;
+}
+
 interface Mapped {
   kind: SurfaceSlotKind;
   value: string;
@@ -107,7 +147,7 @@ function serializeDefault(def: ParameterDefinition): string | undefined {
       if (typeof dv !== "number") {
         return undefined;
       }
-      return formatNumber(dv, def.precision);
+      return formatNumber(dv, inferPrecision(def.precision, def.step));
     case "select": {
       const opts = def.options ?? [];
       const i = opts.indexOf(String(dv));
@@ -126,17 +166,19 @@ function mapField(def: ParameterDefinition, params: ParameterValues): Mapped | n
   switch (def.type) {
     case "boolean":
       return { kind: "toggle", value: raw ? "1" : "0", defaultValue: serializeDefault(def) };
-    case "number":
+    case "number": {
+      const prec = inferPrecision(def.precision, def.step);
       return {
         kind: "number",
-        value: formatNumber(raw, def.precision),
+        value: formatNumber(raw, prec),
         min: def.min,
         max: def.max,
         step: def.step,
-        precision: def.precision,
+        precision: prec,
         unit: def.unit,
         defaultValue: serializeDefault(def)
       };
+    }
     case "select": {
       const options = def.options ?? [];
       const idx = Math.max(0, options.indexOf(String(raw)));
@@ -193,6 +235,7 @@ function mapFieldExpanded(def: ParameterDefinition, params: ParameterValues): Ex
       : [0, 0, 0];
     const dv = Array.isArray(def.defaultValue) ? (def.defaultValue as unknown[]) : undefined;
     const axes = ["X", "Y", "Z"] as const;
+    const prec = inferPrecision(def.precision, def.step);
     return axes.map((axis, i) => {
       const dvi = dv && typeof dv[i] === "number" ? (dv[i] as number) : undefined;
       return {
@@ -201,13 +244,13 @@ function mapFieldExpanded(def: ParameterDefinition, params: ParameterValues): Ex
         groupKey: `vec:${def.key}`,
         mapped: {
           kind: "number",
-          value: formatNumber(arr[i] ?? 0, def.precision),
+          value: formatNumber(arr[i] ?? 0, prec),
           min: def.min,
           max: def.max,
           step: def.step,
-          precision: def.precision,
+          precision: prec,
           unit: def.unit,
-          defaultValue: dvi !== undefined ? formatNumber(dvi, def.precision) : undefined
+          defaultValue: dvi !== undefined ? formatNumber(dvi, prec) : undefined
         }
       };
     });

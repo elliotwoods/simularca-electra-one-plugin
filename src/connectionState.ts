@@ -615,8 +615,13 @@ export class ElectraSession {
       this.log("warn", `reset ${field.label}: default could not be decoded.`);
       return;
     }
-    this.suppressKey = field.key;
-    this.suppressUntil = Date.now() + SURFACE_SUPPRESS_MS;
+    // NOTE: do NOT set suppressKey/suppressUntil here. The echo-suppress
+    // window guards against bouncing a value back to the device after the
+    // device authored it locally (valueChanged / detailChanged). The Reset
+    // pad's btnReset handler emits the request only — it does not update
+    // the device's slots[idx].value. So we DO want pushSurface to send
+    // setFieldValueCommand on the next reconciliation; otherwise the
+    // device's mini-view stays stale at the old value for 350ms.
     const eff = this.effectiveSnapshot();
     if (eff?.id === TEST_ACTOR_ID && this.testParams) {
       this.testParams = { ...this.testParams, [field.key]: decoded };

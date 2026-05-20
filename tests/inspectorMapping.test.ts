@@ -150,6 +150,42 @@ describe("mapInspectorToSurface", () => {
     expect(desc?.fields.find((f) => f.key === "speed")?.unit).toBe("m/s");
     expect(desc?.fields.find((f) => f.key === "ratio")?.unit).toBeUndefined();
   });
+
+  it("infers display precision from step when precision is missing (curve actor 'radius' shape)", () => {
+    // Mirror of `inferDisplayPrecision` in src/ui/widgets/numberEditing.ts:
+    // step=0.05 → 2 dp, step=0.001 → 3 dp, step=1 → 0 dp, step=1e-4 → 4 dp.
+    // Explicit precision still wins.
+    const desc = mapInspectorToSurface(
+      snap(
+        { radius: 1, fine: 0.5, big: 7, sci: 0.0001, explicit: 2 },
+        [
+          // The Curve actor "Radius" shape: step=0.05, unit "m", no precision.
+          { key: "radius", label: "Radius", type: "number", unit: "m", min: 0, step: 0.05 },
+          { key: "fine", label: "Fine", type: "number", step: 0.001 },
+          { key: "big", label: "Big", type: "number", step: 1 },
+          { key: "sci", label: "Sci", type: "number", step: 1e-4 },
+          { key: "explicit", label: "Explicit", type: "number", step: 0.5, precision: 0 }
+        ]
+      )
+    );
+    const byKey = (k: string) => desc?.fields.find((f) => f.key === k);
+    expect(byKey("radius")).toMatchObject({ precision: 2, value: "1.00", unit: "m" });
+    expect(byKey("fine")).toMatchObject({ precision: 3, value: "0.500" });
+    expect(byKey("big")).toMatchObject({ precision: 0, value: "7" });
+    expect(byKey("sci")).toMatchObject({ precision: 4, value: "0.0001" });
+    // Explicit precision (0) wins over the would-be-1 from step=0.5.
+    expect(byKey("explicit")).toMatchObject({ precision: 0, value: "2" });
+  });
+
+  it("falls back to no formatting when neither precision nor step is given", () => {
+    const desc = mapInspectorToSurface(
+      snap({ free: 1.23456 }, [{ key: "free", label: "Free", type: "number" }])
+    );
+    expect(desc?.fields.find((f) => f.key === "free")).toMatchObject({
+      precision: undefined,
+      value: "1.23456"
+    });
+  });
 });
 
 describe("decodeFieldValue", () => {

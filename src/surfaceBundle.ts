@@ -55,6 +55,15 @@ const BTN_H = 51;  // matches JX-3P; leaves ~67 px below for menu chrome.
 const BTN_COLS = [277, 407, 537, 667];
 const BTN_W = 117;
 
+// v42: the firmware-painted faders are a "hack" -- the real interaction surface
+// is the custom centre band, and the faders only exist for the CC7 pot
+// plumbing. Make them recede with a subtle dark colour. The bottom row
+// (ids 5-8) gets dynamically brightened by refreshSlotColors() when its
+// visible slot's value diverges from a declared default; the top row stays
+// at this baseline forever (it isn't 1:1 with slots).
+const FADER_COL_DARK = "33455C"; // mirrors device-side COL_GREY (0x33455C)
+const FADER_COL_BRIGHT = "6FD0FF"; // mirrors device-side COL_NORMAL (0x6FD0FF)
+
 function fader(
   id: number,
   potId: number,
@@ -66,7 +75,7 @@ function fader(
     id,
     type: "fader",
     name: "",
-    color: "FFFFFF",
+    color: FADER_COL_DARK,
     bounds: [COLS[col], y, CTRL_W, STRIP_H],
     pageId: 1,
     controlSetId: 1,
@@ -441,12 +450,12 @@ local linkTopY = 0
 -- one-step-per-callback). On-device tunable.
 local DISC_SENS = 5
 local discAccum = {}
--- v39: page-change uses its own (lower) gain than the multi-select stepper
--- because a single page is 4 fields, not one option -- 2 detents per page
--- feels right (5 was too slow). Wiped alongside discAccum on every
--- recenterAll() so stale partial-pages don't survive a focus / page /
--- surface transition.
-local PAGE_SENS = 2
+-- v41: page-change uses its own (lower) gain than the multi-select stepper
+-- because a single page is 4 fields, not one option -- 4 detents per page
+-- feels right (v39's 2 was too sensitive in practice; 5 was too slow).
+-- Wiped alongside discAccum on every recenterAll() so stale partial-pages
+-- don't survive a focus / page / surface transition.
+local PAGE_SENS = 4
 local pageAccum = 0
 
 local function splitc(s, sep)
@@ -1525,6 +1534,33 @@ local function reconfigureButtons()
   end)
 end
 
+-- v42: faders are visually a "hack" -- the real UI is the custom centre
+-- band. Bottom-row faders (ids 5-8) glow when their visible slot's value
+-- diverges from a declared default, and recede otherwise -- giving an
+-- at-a-glance map of "what's been edited" across the visible page. Top
+-- row stays at the preset JSON's dark baseline (those encoders aren't 1:1
+-- with slots -- they're the page selector / digit-place / channel /
+-- option stepper).
+local FADER_COL_DARK = 0x33455C   -- matches COL_GREY + the JSON baseline
+local FADER_COL_BRIGHT = 0x6FD0FF -- matches COL_NORMAL
+local function refreshSlotColors()
+  for id = 5, 8 do
+    local abs = pageOffset + (id - 5)
+    local f = slots[abs]
+    local bright = (f ~= nil
+                    and f.hasDefault == true
+                    and f.defaultValue ~= nil
+                    and f.value ~= f.defaultValue)
+    pcall(function()
+      local c = controls.get(id)
+      if c ~= nil and c.setColor ~= nil then
+        c:setColor(bright and FADER_COL_BRIGHT or FADER_COL_DARK)
+        c:repaint()
+      end
+    end)
+  end
+end
+
 local function focusSlot(abs)
   if slots[abs] == nil then
     return
@@ -1564,6 +1600,7 @@ function ssp(cmd)
     reconfigureEncoders()
     reconfigureButtons()
     repaint()
+    refreshSlotColors()
     return
   end
   -- Transport state push from the host: "T1" = playing, "T0" = paused.
@@ -1606,10 +1643,13 @@ function ssp(cmd)
           opts = (c[11] ~= nil and c[11] ~= "") and splitc(c[11], ",") or nil,
           hasAlpha = (c[12] == "1"),
           -- v37: optional default value, drives Reset pad visibility +
-          -- the host-side reset action. The default itself is held only as
-          -- a flag here -- the host owns the actual value and writes it
-          -- back through applyFn on 'scp btn reset <idx>'.
-          hasDefault = (c[13] == "1")
+          -- the host-side reset action. The host owns the actual reset
+          -- write (via applyFn on 'scp btn reset <idx>'), but v42 also
+          -- stores the serialised default string here so refreshSlotColors
+          -- can compare it against f.value to decide whether the fader
+          -- should glow (value != default) or recede (value == default).
+          hasDefault = (c[13] == "1"),
+          defaultValue = (c[14] ~= nil and c[14] ~= "") and c[14] or nil
         }
         if idx + 1 > n then
           n = idx + 1
@@ -1631,6 +1671,7 @@ function ssp(cmd)
     reconfigureEncoders()
     reconfigureButtons()
     repaint()
+    refreshSlotColors()
   elseif head[1] == "V" then
     local idx = tonumber(head[2]) or 0
     if slots[idx] ~= nil then
@@ -1647,6 +1688,7 @@ function ssp(cmd)
       end
       recenterAll()
       repaint()
+      refreshSlotColors()
     end
   end
 end
@@ -1752,6 +1794,7 @@ function valueChanged(valueObject, value)
     end
     sspEmit("scp dv " .. abs .. " " .. f.value)
     repaint()
+    refreshSlotColors()
     recenter(ctrl, id)
     return
   end
@@ -1781,6 +1824,7 @@ function valueChanged(valueObject, value)
     end
     sspEmit("scp dv " .. abs .. " " .. f.value)
     repaint()
+    refreshSlotColors()
     recenter(ctrl, id)
     return
   end
@@ -1793,6 +1837,7 @@ function valueChanged(valueObject, value)
   end
   if stepDiscrete(abs, f, delta) then
     repaint()
+    refreshSlotColors()
   end
   -- recenter every callback so lastPot resets to 64 and the accumulator
   -- keeps summing cleanly (endless feel; never pins the fader).
@@ -1859,6 +1904,7 @@ function detailChanged(valueObject, value)
     f.value = string.format("%." .. tostring(editing.prec) .. "f", editing.value)
     emitDigit()
     repaint()
+    refreshSlotColors()
   elseif f.kind == "color" and editing ~= nil and editing.kind == "color" then
     -- knob 0..2 -> R/G/B; knob 3 -> A (when hasAlpha) or V (otherwise).
     -- Step matches the bottom-row preview encoder (1/127 per tick) so the
@@ -1890,8 +1936,10 @@ function detailChanged(valueObject, value)
     f.value = fmtHex(editing.r, editing.g, editing.b, editing.a, editing.hasAlpha)
     sspEmit("scp dv " .. focusedIdx .. " " .. f.value)
     repaint()
+    refreshSlotColors()
   elseif stepDiscrete(focusedIdx, f, delta) then
     repaint()
+    refreshSlotColors()
   end
   recenter(ctrl, id)
 end
@@ -1975,6 +2023,7 @@ local function applyPage(off)
   reconfigureEncoders()
   reconfigureButtons()
   repaint()
+  refreshSlotColors()
 end
 
 function pagePrev()
@@ -2043,6 +2092,7 @@ function preset.onLoad()
   recenterAll()
   reconfigureEncoders()
   reconfigureButtons()
+  refreshSlotColors()
 end
 
 function preset.onReady()
@@ -2050,6 +2100,7 @@ function preset.onReady()
   recenterAll()
   reconfigureEncoders()
   reconfigureButtons()
+  refreshSlotColors()
   sspEmit("simularca:ready bundle=" .. BUNDLE_VERSION)
 end
 
@@ -2057,6 +2108,7 @@ function preset.onEnter()
   recenterAll()
   reconfigureEncoders()
   reconfigureButtons()
+  refreshSlotColors()
   sspEmit("simularca:ready bundle=" .. BUNDLE_VERSION)
 end
 `;
