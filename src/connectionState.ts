@@ -49,7 +49,12 @@ import type {
   ParameterValues,
   PluginHostActorSnapshot
 } from "./contracts";
-import { decodeDeviceRaw, decodeDirectNumber, mapInspectorToSurface } from "./inspectorMapping";
+import {
+  decodeColorHex,
+  decodeDeviceRaw,
+  decodeDirectNumber,
+  mapInspectorToSurface
+} from "./inspectorMapping";
 import {
   clearCommand,
   setTransportCommand,
@@ -107,10 +112,11 @@ function migrateRenderOptions(raw: Record<string, unknown>): ElectraRenderOption
  *  through the host bridge. */
 export const TEST_ACTOR_ID = "__electra-test-surface__";
 
-/** Four dummy controls so the Electra One round-trip can be exercised with
- *  no real actor selected: three numbers covering the distinct number cases
- *  (ranged-with-step → slider, rangeless float, rangeless integer) plus a
- *  select(list). All four are hardware-editable on the device. */
+/** Dummy controls so the Electra One round-trip can be exercised with no
+ *  real actor selected: three numbers covering the distinct number cases
+ *  (ranged-with-step → slider, rangeless float, rangeless integer), a
+ *  select(list), and two colours (RGB-only + RGBA) exercising both zoomed
+ *  channel layouts (R/G/B/V vs R/G/B/A). All are hardware-editable. */
 export const TEST_SCHEMA: ParameterSchema = {
   id: "electra-test-surface",
   title: "Test Surface",
@@ -143,6 +149,17 @@ export const TEST_SCHEMA: ParameterSchema = {
       label: "Test Select",
       type: "select",
       options: ["Alpha", "Bravo", "Charlie", "Delta"]
+    },
+    {
+      key: "tColor",
+      label: "Test Color",
+      type: "color"
+    },
+    {
+      key: "tColorAlpha",
+      label: "Test Color+A",
+      type: "color",
+      alpha: true
     }
   ]
 };
@@ -151,7 +168,9 @@ const TEST_DEFAULTS: ParameterValues = {
   tRanged: 25,
   tRangeless: 1.23,
   tInt: 3,
-  tSelect: "Alpha"
+  tSelect: "Alpha",
+  tColor: "#ff8a00",
+  tColorAlpha: "#3366ccc0"
 };
 
 export interface SessionDeps {
@@ -569,9 +588,17 @@ export class ElectraSession {
     this.applyDeviceEdit("device edit", idx, (field) => decodeDeviceRaw(field, Number(raw)));
   }
 
-  /** Digit-editor (drill) value: the actual semantic number, clamped. */
+  /** Direct-value path (`scp dv`): used by the digit editor for numbers AND
+   *  by colour fields for both preview-brightness scrubbing and zoomed-in
+   *  R/G/B/A/V channel edits — in both cases the device authors the new
+   *  semantic value locally and emits the full string. Dispatch by kind. */
   private onDeviceDirect(idx: number, raw: string): void {
-    this.applyDeviceEdit("digit edit", idx, (field) => decodeDirectNumber(field, raw));
+    this.applyDeviceEdit("direct edit", idx, (field) => {
+      if (field.kind === "color") {
+        return decodeColorHex(field, raw);
+      }
+      return decodeDirectNumber(field, raw);
+    });
   }
 
   /**

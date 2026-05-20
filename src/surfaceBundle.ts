@@ -739,16 +739,141 @@ end
 -- ---- 4-column mini-view (unfocused/empty state) ----
 -- Painted in the centre band when no field is focused. One column per
 -- currently-visible bottom-row field (pageOffset + 0..3), x-aligned with
--- the value encoders beneath. Reuses fmtValue (unit suffix included),
--- cellRect/cellLabel (toggle), and the COL_* colour constants. fillRect
--- budget per frame is ~3-4 rects per number + ~12 per toggle -- 10-20x
--- cheaper than the focused multi-digit readout, so perf is comfortable.
+-- the value encoders beneath.
+--
+-- Per kind:
+--   toggle   -> drawMiniOptionList({"OFF","ON"}, sel)
+--   list     -> drawMiniOptionList(f.opts, sel)  (labels, not indices)
+--   number,  ranged   -> drawMiniRangedNumber: dim full-column bar +
+--                        bright bottom-up fill + mini 7-seg digits on top
+--   number,  rangeless -> drawMiniNumber: mini 7-seg only
+--   other    -> graphics.print fmtValue (text fallback)
+--
+-- All glyphs use a self-contained flat-cap 7-seg painter (drawMiniSeg/
+-- drawMiniDigit) so the main readout's chosen capStyle does NOT propagate
+-- here -- rounded caps are invisible at this size anyway, and skipping
+-- discHW/bands keeps the mini-view loop tight and the code isolated.
+
+-- Flat-cap 7-segment painter for mini digits. t = stroke thickness.
+local function drawMiniSeg(seg, x, y, w, h, t)
+  local h2 = math.floor(h / 2)
+  if seg == "a" then
+    graphics.fillRect(x + t, y, w - 2 * t, t)
+  elseif seg == "f" then
+    graphics.fillRect(x, y + t, t, h2 - t)
+  elseif seg == "b" then
+    graphics.fillRect(x + w - t, y + t, t, h2 - t)
+  elseif seg == "g" then
+    graphics.fillRect(x + t, y + h2 - math.floor(t / 2), w - 2 * t, t)
+  elseif seg == "e" then
+    graphics.fillRect(x, y + h2, t, h2 - t)
+  elseif seg == "c" then
+    graphics.fillRect(x + w - t, y + h2, t, h2 - t)
+  else
+    graphics.fillRect(x + t, y + h - t, w - 2 * t, t)
+  end
+end
+
+local function drawMiniDigit(x, y, w, h, mask, t)
+  for i = 1, 7 do
+    local seg = ALLSEG[i]
+    if hasSeg(mask, seg) then
+      drawMiniSeg(seg, x, y, w, h, t)
+    end
+  end
+end
+
+-- Mini 7-seg display for a number field. Caller owns colour. Sizes digits
+-- to fit w x h; treats decimal point as a small square and minus as the
+-- middle segment only (matches the main readout's conventions).
+local function drawMini7Seg(f, x, y, w, h)
+  local prec = f.prec or 0
+  local s = string.format("%." .. tostring(prec) .. "f", tonumber(f.value) or 0)
+  local n = #s
+  local dh = math.min(h - 4, 40)
+  local dw = math.floor(dh * 0.55)
+  if dw < 4 then dw = 4 end
+  local gap = math.max(2, math.floor(dw * 0.18))
+  local total = n * dw + (n - 1) * gap
+  if total > w then
+    local scale = w / total
+    dw = math.max(3, math.floor(dw * scale))
+    dh = math.max(6, math.floor(dh * scale))
+    gap = math.max(1, math.floor(gap * scale))
+    total = n * dw + (n - 1) * gap
+  end
+  local dt = math.max(2, math.floor(dh / 8))
+  local sx = x + math.floor((w - total) / 2)
+  local sy = y + math.floor((h - dh) / 2)
+  for k = 1, n do
+    local ch = s:sub(k, k)
+    if ch == "." then
+      graphics.fillRect(sx, sy + dh - dt * 2, dt * 2, dt * 2)
+      sx = sx + dt * 2 + gap
+    elseif ch == "-" then
+      drawMiniDigit(sx, sy, dw, dh, "g", dt)
+      sx = sx + dw + gap
+    else
+      drawMiniDigit(sx, sy, dw, dh, SEG[ch] or "", dt)
+      sx = sx + dw + gap
+    end
+  end
+end
+
+-- Ranged number: dim full-column bar (the 100% baseline) + bright bottom-up
+-- fill by value-ratio + mini 7-seg digits overlaid centred. White digits
+-- read clearly over both the dim and the bright portions.
+local function drawMiniRangedNumber(f, x, y, w, h)
+  local v = tonumber(f.value) or 0
+  local ratio = (v - f.mn) / (f.mx - f.mn)
+  if ratio < 0 then ratio = 0 end
+  if ratio > 1 then ratio = 1 end
+  graphics.setColor(COL_GREY)
+  graphics.fillRect(x, y, w, h)
+  local fillH = math.floor(h * ratio)
+  graphics.setColor(0x44607f)
+  graphics.fillRect(x, y + h - fillH, w, fillH)
+  graphics.setColor(COL_HI)
+  drawMini7Seg(f, x, y, w, h)
+end
+
+local function drawMiniNumber(f, x, y, w, h)
+  graphics.setColor(COL_NORMAL)
+  drawMini7Seg(f, x, y, w, h)
+end
+
+-- Full-width vertical option list: one row per option, selected one
+-- highlighted (filled background + inverted text). Wraps to 2 sub-columns
+-- inside the field's mini-cell when there are too many rows to fit.
+-- Shows OPTION LABELS, not numeric indices.
+local function drawMiniOptionList(opts, sel, x, y, w, h)
+  local n = #opts
+  if n == 0 then return end
+  local rowH = 16
+  local maxRows = math.max(1, math.floor(h / rowH))
+  local cols = (n > maxRows) and 2 or 1
+  local rowsPerCol = math.ceil(n / cols)
+  local colW = math.floor(w / cols)
+  for j = 1, n do
+    local col = math.floor((j - 1) / rowsPerCol)
+    local row = (j - 1) % rowsPerCol
+    local rx = x + col * colW
+    local ry = y + row * rowH
+    local active = (j == sel)
+    if active then
+      graphics.setColor(COL_NORMAL)
+      graphics.fillRect(rx, ry, colW, rowH)
+    end
+    graphics.setColor(active and 0x0a0f17 or COL_NORMAL)
+    graphics.print(rx, ry + math.floor(rowH / 2) - 8, opts[j], colW, CENTER)
+  end
+end
+
 local function drawMiniView()
   local CW = 184
-  local labelY = 4
-  local indY = 22
-  local indH = 36
-  local valueY = 64
+  local labelY = 2
+  local indY = 18
+  local indH = BANDH - indY - 24 -- leave bottom 24 px for the scrollbar
   for i = 0, 3 do
     local abs = pageOffset + i
     local f = slots[abs]
@@ -757,28 +882,21 @@ local function drawMiniView()
       graphics.setColor(0x9fb4cf)
       graphics.print(cx, labelY, f.label, CW, CENTER)
       if f.kind == "toggle" then
-        local on = (f.value == "1")
-        local cellW = math.floor((CW - 8) / 2)
-        cellRect(cx, indY, cellW, indH, not on)
-        cellLabel(cx, indY, cellW, indH, "OFF", not on)
-        cellRect(cx + cellW + 8, indY, cellW, indH, on)
-        cellLabel(cx + cellW + 8, indY, cellW, indH, "ON", on)
-      elseif f.kind == "number" and f.mn ~= nil and f.mx ~= nil and f.mx > f.mn then
-        local v = tonumber(f.value) or 0
-        local ratio = (v - f.mn) / (f.mx - f.mn)
-        if ratio < 0 then ratio = 0 end
-        if ratio > 1 then ratio = 1 end
-        local trackH = 8
-        local trackY = indY + math.floor((indH - trackH) / 2)
-        graphics.setColor(COL_GREY)
-        graphics.fillRect(cx, trackY, CW, trackH)
-        local thumbW = 12
-        local thumbX = cx + math.floor((CW - thumbW) * ratio)
+        local sel = (f.value == "1") and 2 or 1
+        drawMiniOptionList({ "OFF", "ON" }, sel, cx, indY, CW, indH)
+      elseif f.kind == "list" and f.opts ~= nil then
+        local sel = (tonumber(f.value) or 0) + 1
+        drawMiniOptionList(f.opts, sel, cx, indY, CW, indH)
+      elseif f.kind == "number" then
+        if f.mn ~= nil and f.mx ~= nil and f.mx > f.mn then
+          drawMiniRangedNumber(f, cx, indY, CW, indH)
+        else
+          drawMiniNumber(f, cx, indY, CW, indH)
+        end
+      else
         graphics.setColor(COL_NORMAL)
-        graphics.fillRect(thumbX, trackY - 2, thumbW, trackH + 4)
+        graphics.print(cx, indY + math.floor(indH / 2) - 8, fmtValue(f), CW, CENTER)
       end
-      graphics.setColor(COL_NORMAL)
-      graphics.print(cx, valueY, fmtValue(f), CW, CENTER)
     end
   end
 end
@@ -891,6 +1009,23 @@ ${ghostDigit}    graphics.setColor(col)
     end
     graphics.setColor(uc)
     drawUnit(f.unit, x, yTop, uw, dh, discHW, r)
+    x = x + uw + gap
+  end
+  -- Vertical range bar to the right of the digit row + any unit glyph. Dim
+  -- background represents the full 100% range; bright bottom-up fill shows
+  -- the current value's position. Only painted when min/max are set.
+  if f.mn ~= nil and f.mx ~= nil and f.mx > f.mn then
+    local v = tonumber(f.value) or 0
+    local ratio = (v - f.mn) / (f.mx - f.mn)
+    if ratio < 0 then ratio = 0 end
+    if ratio > 1 then ratio = 1 end
+    local barW = 12
+    local barX = x
+    graphics.setColor(COL_GREY)
+    graphics.fillRect(barX, yTop, barW, dh)
+    local fillH = math.floor(dh * ratio)
+    graphics.setColor(COL_NORMAL)
+    graphics.fillRect(barX, yTop + dh - fillH, barW, fillH)
   end
 end
 
@@ -1026,6 +1161,61 @@ local function recenterAll()
   discAccum = {}
 end
 
+-- Mode-switching encoder reconfig. Unfocused (zoomed-out): top-left encoder
+-- is the Page selector (renamed, bounds set to the current page count via
+-- Message:setMin/setMax if the firmware exposes them); top encoders 2-4 are
+-- hidden because their detailChanged handlers no-op in this mode. Focused
+-- (zoomed-in): restore all four to their digit-editor roles. Wrapped in
+-- pcall: setVisible / setMin / setMax are unverified on fw v4.1.4 and a
+-- nil call would throw; the bundle's own notes warn that setVisible(false)
+-- on a fader can disable its rotation callback -- we restore visibility on
+-- every entry into focused mode to guard. Declared BEFORE focusSlot (its
+-- earliest caller) -- a local referenced before its declaration would
+-- resolve to a nil global at call time.
+local function reconfigureEncoders()
+  pcall(function()
+    if focusedIdx == nil then
+      local c1 = controls.get(1)
+      if c1 ~= nil then
+        c1:setName("Page")
+      end
+      for id = 2, 4 do
+        local c = controls.get(id)
+        if c ~= nil then
+          c:setVisible(false)
+        end
+      end
+      local maxPage = math.max(0, math.ceil(nslots / 4) - 1)
+      pcall(function()
+        local m = c1:getValue():getMessage()
+        if m.setMin ~= nil then m:setMin(0) end
+        if m.setMax ~= nil then m:setMax(maxPage) end
+        local p = math.floor(pageOffset / 4)
+        m:setValue(p)
+        lastPot[1] = p
+      end)
+    else
+      local c1 = controls.get(1)
+      if c1 ~= nil then
+        c1:setName("")
+      end
+      for id = 2, 4 do
+        local c = controls.get(id)
+        if c ~= nil then
+          c:setVisible(true)
+        end
+      end
+      pcall(function()
+        local m = c1:getValue():getMessage()
+        if m.setMin ~= nil then m:setMin(0) end
+        if m.setMax ~= nil then m:setMax(127) end
+        m:setValue(64)
+        lastPot[1] = 64
+      end)
+    end
+  end)
+end
+
 local function focusSlot(abs)
   if slots[abs] == nil then
     return
@@ -1035,6 +1225,7 @@ local function focusSlot(abs)
   discAccum[abs] = 0
   sspEmit("scp focus " .. abs)
   recenterAll()
+  reconfigureEncoders()
   repaint()
 end
 
@@ -1060,6 +1251,7 @@ function ssp(cmd)
     focusedIdx = nil
     editing = nil
     recenterAll()
+    reconfigureEncoders()
     repaint()
     return
   end
@@ -1119,6 +1311,7 @@ function ssp(cmd)
     focusedIdx = nil
     editing = nil
     recenterAll()
+    reconfigureEncoders()
     repaint()
   elseif head[1] == "V" then
     local idx = tonumber(head[2]) or 0
@@ -1258,20 +1451,27 @@ function detailChanged(valueObject, value)
   local id, ctrl = potOf(valueObject, 1)
   local knob = id - 1
   if focusedIdx == nil then
-    -- Unfocused: encoder 1 (top-left) pages through >4 fields, mirroring
-    -- the btnBack/btnNext hardware buttons. Encoders 2/3/4 stay silent in
-    -- this mode (reserve for future). Focused mode below preserves the
-    -- digit-place pan behaviour exactly.
+    -- Unfocused: encoder 1 (top-left) is the absolute Page selector
+    -- (reconfigureEncoders renames it and -- where the firmware exposes
+    -- Message:setMin/setMax -- bounds it to 0..maxPage). The encoder's
+    -- value IS the page index when bounds took effect; when they didn't,
+    -- value sits in [0..127] and we scale proportionally. Encoders 2-4
+    -- are hidden in this mode (their callbacks no-op even if the firmware
+    -- still dispatches). Focused mode below preserves the digit-place pan.
     if id == 1 then
-      local prev = lastPot[id] or value
-      local delta = value - prev
-      lastPot[id] = value
-      if delta > 0 then
-        pageNext()
-      elseif delta < 0 then
-        pagePrev()
+      local maxPage = math.max(0, math.ceil(nslots / 4) - 1)
+      local page
+      if maxPage == 0 then
+        page = 0
+      elseif value > maxPage then
+        page = math.floor(value * (maxPage + 1) / 128)
+      else
+        page = value
       end
-      recenter(ctrl, id)
+      if page < 0 then page = 0 end
+      if page > maxPage then page = maxPage end
+      lastPot[id] = value
+      applyPage(page * 4)
     end
     return
   end
@@ -1357,6 +1557,7 @@ local function applyPage(off)
     sspEmit("scp focus -1")
   end
   recenterAll()
+  reconfigureEncoders()
   repaint()
 end
 
@@ -1391,6 +1592,7 @@ function btnClear(valueObject, value)
   focusedIdx = nil
   editing = nil
   recenterAll()
+  reconfigureEncoders()
   repaint()
   sspEmit("scp btn clear")
 end
@@ -1432,16 +1634,19 @@ registerPaint()
 function preset.onLoad()
   registerPaint()
   recenterAll()
+  reconfigureEncoders()
 end
 
 function preset.onReady()
   registerPaint()
   recenterAll()
+  reconfigureEncoders()
   sspEmit("simularca:ready bundle=" .. BUNDLE_VERSION)
 end
 
 function preset.onEnter()
   recenterAll()
+  reconfigureEncoders()
   sspEmit("simularca:ready bundle=" .. BUNDLE_VERSION)
 end
 `;

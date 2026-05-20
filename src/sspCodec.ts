@@ -14,7 +14,7 @@
 //   `<ms> ` + `lua:` prefix as cheap defensive parsing in case a future
 //   firmware revives that path, but no live code depends on it.
 
-export type SurfaceSlotKind = "toggle" | "number" | "list" | "readonly";
+export type SurfaceSlotKind = "toggle" | "number" | "list" | "readonly" | "color";
 
 export interface SurfaceField {
   /** Actor param key — the host write target. */
@@ -23,7 +23,8 @@ export interface SurfaceField {
   idx: number;
   kind: SurfaceSlotKind;
   label: string;
-  /** Terse current value: toggle "0"/"1", number decimal, list option index. */
+  /** Terse current value: toggle "0"/"1", number decimal, list option index,
+   *  colour hex `#RRGGBB` or `#RRGGBBAA`. */
   value: string;
   sectionLabel?: string;
   min?: number;
@@ -35,6 +36,12 @@ export interface SurfaceField {
    *  value on the device. Empty/undefined → no unit shown. */
   unit?: string;
   options?: string[];
+  /** Only meaningful when `kind === "color"`. When true, the zoomed-in
+   *  control binds encoder 4 to alpha; otherwise it binds to HSV V
+   *  (brightness). The hex value already carries the alpha bits when this
+   *  is true, but the flag drives device-side painter + encoder labelling
+   *  without re-parsing the hex on every paint. */
+  hasAlpha?: boolean;
 }
 
 export interface SurfaceDescriptor {
@@ -85,7 +92,8 @@ export function encodeSurfacePayload(desc: SurfaceDescriptor): string {
       f.step ?? "",
       f.precision ?? "",
       sanitizeToken(f.unit ?? "", 8),
-      (f.options ?? []).map((o) => sanitizeToken(o, 16)).join(",")
+      (f.options ?? []).map((o) => sanitizeToken(o, 16)).join(","),
+      f.kind === "color" ? (f.hasAlpha ? "1" : "0") : ""
     ].join(US)
   );
   return [head, ...rows].join(RS);
@@ -114,7 +122,8 @@ export function decodeSurfacePayload(payload: string): SurfaceDescriptor | null 
       step: c[7] ? Number(c[7]) : undefined,
       precision: c[8] ? Number(c[8]) : undefined,
       unit: c[9] ? c[9] : undefined,
-      options: c[10] ? c[10].split(",") : undefined
+      options: c[10] ? c[10].split(",") : undefined,
+      hasAlpha: c[11] === "1" ? true : undefined
     });
   }
   return { actorId: "", actorName: head[1] ?? "", fields };

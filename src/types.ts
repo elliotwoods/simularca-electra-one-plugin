@@ -133,7 +133,18 @@ export interface ElectraLogEntry {
  *  null disables the firmware gate until then. */
 export const MIN_FIRMWARE: string | null = null;
 
-/** Bumped whenever preset.json or any Lua module changes (SPEC §4.1). v31 =
+/** Bumped whenever preset.json or any Lua module changes (SPEC §4.1). v32 =
+ *  v31 plus the colour control. New `kind="color"` SurfaceSlotKind with two
+ *  interaction modes: (a) un-zoomed bottom-row encoder scrubs HSV V
+ *  (brightness) preserving cached H/S so the hue survives V==0 round-trips;
+ *  (b) drilled-in top-row encoders 1-4 bind to R/G/B/{A,V} -- alpha when the
+ *  param def has `alpha:true`, otherwise V (the same brightness axis as the
+ *  un-zoomed encoder). Mini-view paints a colour swatch + brightness bar;
+ *  drawReadout paints a big swatch + 4 channel columns. Wire change: the
+ *  SSP `A` payload gains a 12th column (`hasAlpha` 0/1), only meaningful
+ *  for colour fields. Device->host colour edits ride the existing
+ *  `scp dv <idx> <hex>` channel -- the device authors the full hex
+ *  (#RRGGBB or #RRGGBBAA) locally so the host just normalises + writes. v31 =
  *  v30 plus two fixes. (a) `setColor` on fw v4.1.4 takes a NUMERIC argument
  *  (Lua hex literal `0xRRGGBB`), not a hex string -- empirically verified
  *  via the live debug bridge ("number expected, got string" thrown on a
@@ -247,7 +258,7 @@ export const MIN_FIRMWARE: string | null = null;
  *  v22 = adds the `triangle` cap style (authentic linear-taper hexagon 7-seg;
  *  reuses round's RLE + polygon's transposed vertical stretch). flat/round/
  *  polygon Lua unchanged except this version stamp. */
-export const SURFACE_BUNDLE_VERSION = 31;
+export const SURFACE_BUNDLE_VERSION = 32;
 
 /** Preset name marker used for cheap discovery on the device (SPEC §4.2). */
 export const SURFACE_PRESET_MARKER = "Simularca Surface";

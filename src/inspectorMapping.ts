@@ -45,6 +45,29 @@ interface Mapped {
   /** Optional unit suffix carried verbatim from the schema (e.g. "m", "°"). */
   unit?: string;
   options?: string[];
+  /** Only set for `kind === "color"`; mirrors the param def's `alpha` flag. */
+  hasAlpha?: boolean;
+}
+
+/** Normalise a hex colour to lowercase `#rrggbb` or `#rrggbbaa`. Accepts the
+ *  same shapes the inspector ColorField does (3/6/8-digit hex, with or without
+ *  leading `#`), plus a defensive empty-string fallback to opaque black. */
+function normalizeHex(raw: unknown, hasAlpha: boolean): string {
+  const s = (typeof raw === "string" ? raw : "").trim().toLowerCase();
+  const body = s.startsWith("#") ? s.slice(1) : s;
+  if (/^[0-9a-f]{3}$/.test(body)) {
+    const r = body[0];
+    const g = body[1];
+    const b = body[2];
+    return hasAlpha ? `#${r}${r}${g}${g}${b}${b}ff` : `#${r}${r}${g}${g}${b}${b}`;
+  }
+  if (/^[0-9a-f]{6}$/.test(body)) {
+    return hasAlpha ? `#${body}ff` : `#${body}`;
+  }
+  if (/^[0-9a-f]{8}$/.test(body)) {
+    return hasAlpha ? `#${body}` : `#${body.slice(0, 6)}`;
+  }
+  return hasAlpha ? "#000000ff" : "#000000";
 }
 
 /** Map one parameter definition + current value to a slot, or null to omit. */
@@ -84,11 +107,14 @@ function mapField(def: ParameterDefinition, params: ParameterValues): Mapped | n
         value: Array.isArray(raw) ? (raw as unknown[]).join(", ") : String(raw ?? ""),
         unit: def.unit
       };
-    case "color":
+    case "color": {
+      const hasAlpha = def.alpha === true;
       return {
-        kind: "readonly",
-        value: Array.isArray(raw) ? (raw as unknown[]).join(", ") : String(raw ?? "")
+        kind: "color",
+        value: normalizeHex(raw, hasAlpha),
+        hasAlpha
       };
+    }
     default:
       // location / datetime / timezone / file / material-slots /
       // dxf-layer-states — unsupported on the surface; omit.
@@ -205,7 +231,8 @@ export function mapInspectorToSurface(
       step: mapped.step,
       precision: mapped.precision,
       unit: mapped.unit,
-      options: mapped.options
+      options: mapped.options,
+      hasAlpha: mapped.hasAlpha
     });
   }
   if (fields.length === 0) {
@@ -275,12 +302,31 @@ export function decodeDirectNumber(
 }
 
 /**
+ * Colour edits arrive from the device as a hex string (`scp dv <idx> <hex>`).
+ * The device authors the new hex locally — applying R/G/B/A/V channel deltas
+ * — so the host just validates + normalises before writing back.
+ */
+export function decodeColorHex(
+  field: Pick<SurfaceField, "hasAlpha">,
+  raw: string
+): string | undefined {
+  const normalised = normalizeHex(raw, field.hasAlpha === true);
+  // normalizeHex always returns a valid string; only reject if the input was
+  // truly garbage (no hex digits at all) — distinguish via the fallback path.
+  const body = String(raw).trim().toLowerCase().replace(/^#/, "");
+  if (!/^[0-9a-f]{3,8}$/.test(body)) {
+    return undefined;
+  }
+  return normalised;
+}
+
+/**
  * Convert a terse value coming back from the device into a host param value
  * for the given field. Returns `undefined` for kinds the device cannot edit
  * (so the caller skips the write).
  */
 export function decodeFieldValue(
-  field: Pick<SurfaceField, "kind" | "options">,
+  field: Pick<SurfaceField, "kind" | "options" | "hasAlpha">,
   raw: string
 ): boolean | number | string | undefined {
   switch (field.kind) {
@@ -298,6 +344,8 @@ export function decodeFieldValue(
       }
       return opts.includes(raw) ? raw : undefined;
     }
+    case "color":
+      return decodeColorHex(field, raw);
     default:
       return undefined;
   }
