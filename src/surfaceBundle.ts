@@ -466,6 +466,97 @@ local function digitAt(v, e)
   return math.floor(math.abs(v) / (10 ^ e)) % 10
 end
 
+-- ---- colour helpers (RGB <-> HSV, hex parse/format, byte pack) ----
+-- All channels are floats in 0..1. Hex strings accept the same shapes the
+-- inspector normaliser accepts: 6 or 8 digits, with or without a leading "#".
+local function parseHex(s)
+  if s == nil then s = "" end
+  if string.sub(s, 1, 1) == "#" then s = string.sub(s, 2) end
+  local n = #s
+  if n ~= 6 and n ~= 8 then
+    return 0, 0, 0, 1
+  end
+  local r = (tonumber(string.sub(s, 1, 2), 16) or 0) / 255
+  local g = (tonumber(string.sub(s, 3, 4), 16) or 0) / 255
+  local b = (tonumber(string.sub(s, 5, 6), 16) or 0) / 255
+  local a = (n == 8) and ((tonumber(string.sub(s, 7, 8), 16) or 255) / 255) or 1
+  return r, g, b, a
+end
+
+local function fmtHex(r, g, b, a, hasAlpha)
+  local function byte(c)
+    if c < 0 then c = 0 end
+    if c > 1 then c = 1 end
+    return math.floor(c * 255 + 0.5)
+  end
+  if hasAlpha then
+    return string.format("#%02x%02x%02x%02x", byte(r), byte(g), byte(b), byte(a))
+  end
+  return string.format("#%02x%02x%02x", byte(r), byte(g), byte(b))
+end
+
+-- Pack 0..1 floats into a 0xRRGGBB integer for graphics.setColor (firmware
+-- expects a number, not a hex string -- v31's setColor fix established this).
+local function rgbInt(r, g, b)
+  local function byte(c)
+    if c < 0 then c = 0 end
+    if c > 1 then c = 1 end
+    return math.floor(c * 255 + 0.5)
+  end
+  return byte(r) * 65536 + byte(g) * 256 + byte(b)
+end
+
+local function rgbToHsv(r, g, b)
+  local mx = math.max(r, g, b)
+  local mn = math.min(r, g, b)
+  local d = mx - mn
+  local v = mx
+  local s = (mx <= 0) and 0 or (d / mx)
+  local h = 0
+  if d > 0 then
+    if mx == r then
+      h = ((g - b) / d) % 6
+    elseif mx == g then
+      h = (b - r) / d + 2
+    else
+      h = (r - g) / d + 4
+    end
+    h = h / 6
+    if h < 0 then h = h + 1 end
+  end
+  return h, s, v
+end
+
+local function hsvToRgb(h, s, v)
+  if s <= 0 then
+    return v, v, v
+  end
+  local hh = (h % 1) * 6
+  local i = math.floor(hh)
+  local f = hh - i
+  local p = v * (1 - s)
+  local q = v * (1 - s * f)
+  local t = v * (1 - s * (1 - f))
+  if i == 0 then return v, t, p
+  elseif i == 1 then return q, v, p
+  elseif i == 2 then return p, v, t
+  elseif i == 3 then return p, q, v
+  elseif i == 4 then return t, p, v
+  else return v, p, q
+  end
+end
+
+-- HSV V is also the encoder-driven "brightness" axis. Refresh the slot's
+-- cached H/S whenever R/G/B (or the host) writes a new colour, so a later
+-- V-scrub round-trip through V==0 still recovers the user's hue. Returns
+-- the freshly cached (h, s).
+local function refreshHsCache(f, r, g, b)
+  local h, s = rgbToHsv(r, g, b)
+  f.cachedH = h
+  f.cachedS = s
+  return h, s
+end
+
 -- ---- 7-segment renderer ----
 -- segments: a top, b top-right, c bottom-right, d bottom, e bottom-left,
 -- f top-left, g middle.
@@ -558,6 +649,14 @@ local function renderRows()
     for k = 0, 3 do
       nameOf(1 + k, f.label)
     end
+  elseif f.kind == "color" and editing ~= nil then
+    -- Top-row encoders bind to R/G/B/{A,V}: alpha if the param declared it,
+    -- otherwise HSV V (the same brightness axis as the un-zoomed bottom
+    -- encoder, surfaced here for fine control).
+    nameOf(1, "R")
+    nameOf(2, "G")
+    nameOf(3, "B")
+    nameOf(4, editing.hasAlpha and "A" or "V")
   elseif f.kind == "list" and f.opts ~= nil then
     local cur = tonumber(f.value) or 0
     for k = 0, 3 do
@@ -675,6 +774,63 @@ local function drawEnum(f)
     cellRect(x, y, cw, rh, active)
     cellLabel(x, y, cw, rh, f.opts[oi + 1] or "", active)
   end
+end
+
+-- ---- colour focused painter ----
+-- Big colour swatch up top (full width) + four channel columns underneath
+-- centred on the top-row encoders. Letters R/G/B/{A,V} above each column;
+-- vertical bar filled bottom-up by the channel value; numeric 0..100 below.
+-- Alpha is shown by the A column when present; when absent, the 4th column
+-- is the V (brightness) axis -- the same axis the un-zoomed bottom-row
+-- encoder scrubs, surfaced here for fine control.
+local function drawChannelColumn(letter, ratio, cx, top, w, h)
+  -- Title letter (top stub).
+  graphics.setColor(0x9fb4cf)
+  graphics.print(cx - math.floor(w / 2), top, letter, w, CENTER)
+  -- Bar track (dim background) + bright bottom-up fill.
+  local barX = cx - math.floor(w / 2) + 6
+  local barW = w - 12
+  local barTop = top + 22
+  local barH = h - 44
+  graphics.setColor(COL_GREY)
+  graphics.fillRect(barX, barTop, barW, barH)
+  local r = ratio
+  if r < 0 then r = 0 end
+  if r > 1 then r = 1 end
+  local fillH = math.floor(barH * r)
+  graphics.setColor(COL_NORMAL)
+  graphics.fillRect(barX, barTop + barH - fillH, barW, fillH)
+  -- Percent readout.
+  graphics.setColor(COL_NORMAL)
+  graphics.print(cx - math.floor(w / 2), top + h - 18, tostring(math.floor(r * 100 + 0.5)) .. "%", w, CENTER)
+end
+
+local function drawColor(f)
+  local r, g, b, a = parseHex(f.value)
+  local hasAlpha = f.hasAlpha == true
+  -- Swatch band at the top of the readout area. Use the un-modulated RGB
+  -- (alpha is shown numerically by the A column rather than blended -- the
+  -- device has no checkerboard primitive to make blending readable).
+  local swTop = 22
+  local swH = math.floor((BANDH - 50) * 0.42)
+  graphics.setColor(rgbInt(r, g, b))
+  graphics.fillRect(20, swTop, 760, swH)
+  -- Thin border so the swatch reads as a control, not a background flood.
+  local bt = 3
+  graphics.setColor(COL_NORMAL)
+  graphics.fillRect(20, swTop, 760, bt)
+  graphics.fillRect(20, swTop + swH - bt, 760, bt)
+  graphics.fillRect(20, swTop, bt, swH)
+  graphics.fillRect(20 + 760 - bt, swTop, bt, swH)
+  -- Channel columns, centred under the top-row encoders.
+  local colTop = swTop + swH + 10
+  local colH = BANDH - 28 - colTop
+  local colW = 160
+  local fourth = hasAlpha and a or select(3, rgbToHsv(r, g, b))
+  drawChannelColumn("R", r, DETAIL_CX[1], colTop, colW, colH)
+  drawChannelColumn("G", g, DETAIL_CX[2], colTop, colW, colH)
+  drawChannelColumn("B", b, DETAIL_CX[3], colTop, colW, colH)
+  drawChannelColumn(hasAlpha and "A" or "V", fourth, DETAIL_CX[4], colTop, colW, colH)
 end
 
 -- ---- unit glyph rendering ----
@@ -842,6 +998,37 @@ local function drawMiniNumber(f, x, y, w, h)
   drawMini7Seg(f, x, y, w, h)
 end
 
+-- Mini swatch + brightness bar. The brightness bar is the same HSV V axis
+-- the un-zoomed bottom-row encoder scrubs, so the indicator reads as
+-- "what this encoder does" rather than as a redundant value display.
+local function drawMiniColor(f, x, y, w, h)
+  local r, g, b, a = parseHex(f.value)
+  local _, _, v = rgbToHsv(r, g, b)
+  -- Top ~75% of the cell is the swatch with a thin border.
+  local swH = math.max(16, math.floor(h * 0.72))
+  graphics.setColor(rgbInt(r, g, b))
+  graphics.fillRect(x, y, w, swH)
+  local bt = 2
+  graphics.setColor(COL_NORMAL)
+  graphics.fillRect(x, y, w, bt)
+  graphics.fillRect(x, y + swH - bt, w, bt)
+  graphics.fillRect(x, y, bt, swH)
+  graphics.fillRect(x + w - bt, y, bt, swH)
+  -- Brightness bar underneath: dim track + bright bottom-up fill by V.
+  local barTop = y + swH + 4
+  local barH = math.max(4, h - swH - 4 - 14)
+  graphics.setColor(COL_GREY)
+  graphics.fillRect(x, barTop, w, barH)
+  local fillW = math.floor(w * (v < 0 and 0 or (v > 1 and 1 or v)))
+  graphics.setColor(COL_NORMAL)
+  graphics.fillRect(x, barTop, fillW, barH)
+  -- Alpha hint: when present and not opaque, show "Aa%" caption underneath.
+  if f.hasAlpha == true and a < 0.999 then
+    graphics.setColor(0x9fb4cf)
+    graphics.print(x, barTop + barH + 1, "A " .. tostring(math.floor(a * 100 + 0.5)) .. "%", w, CENTER)
+  end
+end
+
 -- Full-width vertical option list: one row per option, selected one
 -- highlighted (filled background + inverted text). Wraps to 2 sub-columns
 -- inside the field's mini-cell when there are too many rows to fit.
@@ -893,6 +1080,8 @@ local function drawMiniView()
         else
           drawMiniNumber(f, cx, indY, CW, indH)
         end
+      elseif f.kind == "color" then
+        drawMiniColor(f, cx, indY, CW, indH)
       else
         graphics.setColor(COL_NORMAL)
         graphics.print(cx, indY + math.floor(indH / 2) - 8, fmtValue(f), CW, CENTER)
@@ -920,6 +1109,10 @@ local function drawReadout()
   end
   if f.kind == "list" and f.opts ~= nil then
     drawEnum(f)
+    return
+  end
+  if f.kind == "color" then
+    drawColor(f)
     return
   end
   if f.kind ~= "number" or editing == nil then
@@ -1117,7 +1310,26 @@ end
 -- ---- focus / editing ----
 local function buildEditing(abs)
   local f = slots[abs]
-  if f == nil or f.kind ~= "number" then
+  if f == nil then
+    editing = nil
+    return
+  end
+  if f.kind == "color" then
+    -- Drilled colour: top-row encoders 1-4 edit R/G/B and (alpha OR HSV V).
+    -- Cache H/S on the slot so V scrubbing past 0 still recovers the hue.
+    local r, g, b, a = parseHex(f.value)
+    local h, s, v = rgbToHsv(r, g, b)
+    if f.cachedH == nil then f.cachedH = h end
+    if f.cachedS == nil then f.cachedS = s end
+    editing = {
+      kind = "color",
+      r = r, g = g, b = b, a = a, v = v,
+      h = f.cachedH, s = f.cachedS,
+      hasAlpha = f.hasAlpha == true
+    }
+    return
+  end
+  if f.kind ~= "number" then
     editing = nil
     return
   end
@@ -1185,14 +1397,14 @@ local function reconfigureEncoders()
           c:setVisible(false)
         end
       end
-      local maxPage = math.max(0, math.ceil(nslots / 4) - 1)
+      -- Mid-park encoder 1 (the same way recenterAll does for every other
+      -- encoder) so the next rotation has 63 detents of headroom in either
+      -- direction. Paging is delta-based in detailChanged below -- the
+      -- absolute value is irrelevant, only the per-turn delta matters.
       pcall(function()
         local m = c1:getValue():getMessage()
-        if m.setMin ~= nil then m:setMin(0) end
-        if m.setMax ~= nil then m:setMax(maxPage) end
-        local p = math.floor(pageOffset / 4)
-        m:setValue(p)
-        lastPot[1] = p
+        m:setValue(64)
+        lastPot[1] = 64
       end)
     else
       local c1 = controls.get(1)
@@ -1207,8 +1419,6 @@ local function reconfigureEncoders()
       end
       pcall(function()
         local m = c1:getValue():getMessage()
-        if m.setMin ~= nil then m:setMin(0) end
-        if m.setMax ~= nil then m:setMax(127) end
         m:setValue(64)
         lastPot[1] = 64
       end)
@@ -1292,7 +1502,8 @@ function ssp(cmd)
           step = tonumber(c[8]),
           prec = tonumber(c[9]) or 0,
           unit = (c[10] ~= nil and c[10] ~= "") and c[10] or nil,
-          opts = (c[11] ~= nil and c[11] ~= "") and splitc(c[11], ",") or nil
+          opts = (c[11] ~= nil and c[11] ~= "") and splitc(c[11], ",") or nil,
+          hasAlpha = (c[12] == "1")
         }
         if idx + 1 > n then
           n = idx + 1
@@ -1318,7 +1529,14 @@ function ssp(cmd)
     if slots[idx] ~= nil then
       slots[idx].value = head[3] or ""
       if focusedIdx == idx and editing ~= nil then
-        editing.value = tonumber(head[3]) or editing.value
+        if slots[idx].kind == "color" then
+          -- Re-derive the colour editing state from the freshly pushed hex.
+          -- buildEditing also re-seeds cachedH/S, so a host push doesn't
+          -- desync the V-axis hue.
+          buildEditing(idx)
+        else
+          editing.value = tonumber(head[3]) or editing.value
+        end
       end
       recenterAll()
       repaint()
@@ -1430,6 +1648,35 @@ function valueChanged(valueObject, value)
     recenter(ctrl, id)
     return
   end
+  if f.kind == "color" then
+    -- The "main" (un-zoomed) encoder for a colour scrubs HSV V (brightness).
+    -- H and S come from the slot's cached values so a V-trip through 0
+    -- preserves the user's hue. Same axis as encoder 4 in the drilled RGBV
+    -- layout; the zoomed control is the fine-control twin of this preview.
+    local prev = lastPot[id] or value
+    local delta = value - prev
+    lastPot[id] = value
+    if delta == 0 then
+      return
+    end
+    local r0, g0, b0, a = parseHex(f.value)
+    if f.cachedH == nil or f.cachedS == nil then
+      refreshHsCache(f, r0, g0, b0)
+    end
+    local _, _, v0 = rgbToHsv(r0, g0, b0)
+    local v = v0 + delta * (1 / 127)
+    if v < 0 then v = 0 end
+    if v > 1 then v = 1 end
+    local r, g, b = hsvToRgb(f.cachedH, f.cachedS, v)
+    f.value = fmtHex(r, g, b, a, f.hasAlpha == true)
+    if focusedIdx == abs and editing ~= nil and editing.kind == "color" then
+      editing.r = r; editing.g = g; editing.b = b; editing.v = v
+    end
+    sspEmit("scp dv " .. abs .. " " .. f.value)
+    repaint()
+    recenter(ctrl, id)
+    return
+  end
   -- toggle / list: discrete edit (one option per detent), not raw 0..127
   local prev = lastPot[id] or value
   local delta = value - prev
@@ -1451,27 +1698,24 @@ function detailChanged(valueObject, value)
   local id, ctrl = potOf(valueObject, 1)
   local knob = id - 1
   if focusedIdx == nil then
-    -- Unfocused: encoder 1 (top-left) is the absolute Page selector
-    -- (reconfigureEncoders renames it and -- where the firmware exposes
-    -- Message:setMin/setMax -- bounds it to 0..maxPage). The encoder's
-    -- value IS the page index when bounds took effect; when they didn't,
-    -- value sits in [0..127] and we scale proportionally. Encoders 2-4
-    -- are hidden in this mode (their callbacks no-op even if the firmware
-    -- still dispatches). Focused mode below preserves the digit-place pan.
+    -- Unfocused: encoder 1 (top-left) pages -- DELTA based, same pattern as
+    -- the other encoders. The encoder sits mid-parked at 64 (reconfigure
+    -- Encoders + recenterAll keep it there) and we read the per-detent
+    -- delta against lastPot. Going through pageNext/pagePrev means the
+    -- recenterAll inside applyPage mid-resets the encoder on every page
+    -- change, and the synchronous m:setValue(64) re-entry arrives with
+    -- delta=0 against the freshly-set lastPot=64 -- harmless. Absolute-
+    -- value paging was attempted but ping-ponged because the recenterAll
+    -- echo computed a different page each pass. Encoders 2-4 stay silent.
     if id == 1 then
-      local maxPage = math.max(0, math.ceil(nslots / 4) - 1)
-      local page
-      if maxPage == 0 then
-        page = 0
-      elseif value > maxPage then
-        page = math.floor(value * (maxPage + 1) / 128)
-      else
-        page = value
-      end
-      if page < 0 then page = 0 end
-      if page > maxPage then page = maxPage end
+      local prev = lastPot[id] or value
+      local delta = value - prev
       lastPot[id] = value
-      applyPage(page * 4)
+      if delta > 0 then
+        pageNext()
+      elseif delta < 0 then
+        pagePrev()
+      end
     end
     return
   end
@@ -1491,6 +1735,37 @@ function detailChanged(valueObject, value)
     editing.ws = clampWS(editing.ws, editing.value, editing.prec)
     f.value = string.format("%." .. tostring(editing.prec) .. "f", editing.value)
     emitDigit()
+    repaint()
+  elseif f.kind == "color" and editing ~= nil and editing.kind == "color" then
+    -- knob 0..2 -> R/G/B; knob 3 -> A (when hasAlpha) or V (otherwise).
+    -- Step matches the bottom-row preview encoder (1/127 per tick) so the
+    -- fine-control encoders feel like the same axis at a different gain.
+    local step = 1 / 127
+    if knob == 0 then
+      editing.r = math.max(0, math.min(1, editing.r + delta * step))
+    elseif knob == 1 then
+      editing.g = math.max(0, math.min(1, editing.g + delta * step))
+    elseif knob == 2 then
+      editing.b = math.max(0, math.min(1, editing.b + delta * step))
+    elseif knob == 3 then
+      if editing.hasAlpha then
+        editing.a = math.max(0, math.min(1, editing.a + delta * step))
+      else
+        editing.v = math.max(0, math.min(1, editing.v + delta * step))
+        local r, g, b = hsvToRgb(editing.h, editing.s, editing.v)
+        editing.r = r; editing.g = g; editing.b = b
+      end
+    end
+    -- Re-cache H/S whenever the user touched an R/G/B encoder so the V
+    -- axis stays aligned to the freshly-authored hue.
+    if knob <= 2 then
+      local h, s = refreshHsCache(f, editing.r, editing.g, editing.b)
+      editing.h = h; editing.s = s
+      local _, _, v = rgbToHsv(editing.r, editing.g, editing.b)
+      editing.v = v
+    end
+    f.value = fmtHex(editing.r, editing.g, editing.b, editing.a, editing.hasAlpha)
+    sspEmit("scp dv " .. focusedIdx .. " " .. f.value)
     repaint()
   elseif stepDiscrete(focusedIdx, f, delta) then
     repaint()

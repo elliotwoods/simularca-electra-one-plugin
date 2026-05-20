@@ -133,7 +133,62 @@ export interface ElectraLogEntry {
  *  null disables the firmware gate until then. */
 export const MIN_FIRMWARE: string | null = null;
 
-/** Bumped whenever preset.json or any Lua module changes (SPEC §4.1). v32 =
+/** Bumped whenever preset.json or any Lua module changes (SPEC §4.1). v36 =
+ *  v35 with the page encoder REVERTED to delta-based paging (the same
+ *  per-detent pattern every other encoder uses). The v33/v35 absolute-
+ *  mapping attempts ping-ponged because applyPage -> recenterAll ->
+ *  m:setValue(64) synchronously re-entered detailChanged with value=64,
+ *  which mapped to a DIFFERENT page than the one just set, and triggered
+ *  applyPage again. Delta-based sees the same echo as delta=0 against the
+ *  freshly-set lastPot=64 and returns harmlessly -- the exact mechanism
+ *  recenterAll's own comment documents for valueChanged. reconfigure
+ *  Encoders now mid-parks encoder 1 at 64 in both modes (matching the
+ *  other encoders); the page encoder's on-screen cursor stays mid-parked
+ *  between detents -- the trade-off for a reliable per-turn paging UX.
+ *  The pageMutating re-entry guard is removed (delta=0 suppression covers
+ *  the same case). v35 =
+ *  v34 plus the absolute-paging re-entry fix. The v33 unfocused-encoder-1
+ *  paging froze on hardware because applyPage's recenterAll calls
+ *  m:setValue(64) on every encoder, and Message:setValue synchronously
+ *  re-enters detailChanged; the re-entered call computed a new page from
+ *  64 (a different page than the one we'd just set), called applyPage
+ *  again, and the page ping-ponged or got stuck. Fix: (a) module-local
+ *  `pageMutating` boolean guards the unfocused branch -- while we are
+ *  inside an absolute-paging applyPage cascade, re-entries just update
+ *  lastPot and return. (b) Drop the non-monotonic `value <= maxPage then
+ *  page = value` shortcut (value 3 in a 3-page set folded back to page 0);
+ *  always scale `value * (maxPage + 1) / 128` for a monotonic mapping.
+ *  (c) Idempotency: skip applyPage when the computed page equals the
+ *  current page. (d) reconfigureEncoders now places the fader strip at a
+ *  PAGE-PROPORTIONAL value (curPage * 127 / maxPage) so the on-screen
+ *  cursor mirrors the paging state. Message:setMin/setMax are dropped
+ *  (hardware-verified that they do not constrain reported values on
+ *  fw v4.1.4). v34 =
+ *  v33 with no behavioural delta -- forced-republish bump so devices that
+ *  were provisioned with an interim v33 (the reconfigureEncoders work
+ *  shipping before the v32 colour painters landed in the same bundle) pull
+ *  the merged Lua. ensureProvisioned() short-circuits on a version match,
+ *  so the only way to get the colour painters onto a v33-stamped device is
+ *  to bump past it. v33 =
+ *  v32 plus the unfocused/zoomed-mode UX overhaul. (a) `drawMiniView`
+ *  redesigned: dim full-column range bar with bright bottom-up fill and
+ *  overlaid mini 7-seg digits for ranged numbers; mini 7-seg only for
+ *  rangeless numbers; full-width vertical option list (multi-col wrap on
+ *  overflow) showing labels (NOT numeric indices) for toggle/multi-select.
+ *  Self-contained `drawMiniSeg`/`drawMiniDigit` (flat caps) -- the main
+ *  readout's chosen capStyle does NOT propagate to the mini cells.
+ *  (b) Narrow vertical range bar painted to the right of the digit row in
+ *  the focused/zoomed view when min/max are set, mirroring the mini-view
+ *  affordance. (c) `reconfigureEncoders` switches the top row by mode:
+ *  unfocused -> encoder 1 renamed "Page" with `Message:setMin/setMax`
+ *  attempted (pcall-wrapped fallback to delta-proportional mapping if the
+ *  firmware doesn't expose those), encoders 2-4 hidden; focused -> all
+ *  restored to digit-place pan. `detailChanged` encoder-1-unfocused branch
+ *  is now ABSOLUTE (`page = value` when bounds honoured, scaled by 127
+ *  otherwise) calling `applyPage(page * 4)` -- replacing v28's delta-based
+ *  `pageNext/pagePrev` variant. Called from focusSlot/ssp C+A/applyPage/
+ *  btnClear/preset.onLoad+onReady+onEnter so the encoder row tracks every
+ *  focus transition. v32 =
  *  v31 plus the colour control. New `kind="color"` SurfaceSlotKind with two
  *  interaction modes: (a) un-zoomed bottom-row encoder scrubs HSV V
  *  (brightness) preserving cached H/S so the hue survives V==0 round-trips;
@@ -258,7 +313,7 @@ export const MIN_FIRMWARE: string | null = null;
  *  v22 = adds the `triangle` cap style (authentic linear-taper hexagon 7-seg;
  *  reuses round's RLE + polygon's transposed vertical stretch). flat/round/
  *  polygon Lua unchanged except this version stamp. */
-export const SURFACE_BUNDLE_VERSION = 32;
+export const SURFACE_BUNDLE_VERSION = 36;
 
 /** Preset name marker used for cheap discovery on the device (SPEC §4.2). */
 export const SURFACE_PRESET_MARKER = "Simularca Surface";

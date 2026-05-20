@@ -155,21 +155,60 @@ describe("surface bundle", () => {
     expect(SURFACE_MAIN_LUA).toContain('sspEmit("scp btn clear")');
     expect(SURFACE_PRESET_JSON).not.toContain("btnSpare");
     expect(SURFACE_PRESET_JSON).toContain("btnClear");
-    // Phase 2: in unfocused mode, detailChanged routes encoder 1 to paging
-    // (pageNext/pagePrev based on delta sign). The branch lives BEFORE the
-    // focusedIdx==nil early-return so it actually fires; focused mode keeps
-    // the digit-place pan, so the branch is gated on (focusedIdx == nil).
+    // v36 Phase B (final): unfocused encoder 1 is DELTA-based paging (same
+    // pattern as every other encoder on the surface). The absolute-value
+    // / proportional-mapping variant ping-ponged because the recenterAll
+    // echo inside applyPage computed a different page each pass; delta-
+    // based mode sees that echo as delta=0 and returns harmlessly. The
+    // branch lives BEFORE the focusedIdx==nil early-return so it actually
+    // fires; focused mode below keeps the digit-place pan.
     expect(SURFACE_MAIN_LUA).toMatch(
-      /if\s+focusedIdx\s+==\s+nil\s+then[\s\S]{0,500}?if\s+id\s+==\s+1\s+then[\s\S]{0,300}?pageNext\(\)/
+      /if\s+focusedIdx\s+==\s+nil\s+then[\s\S]{0,1500}?if\s+id\s+==\s+1\s+then[\s\S]{0,800}?pageNext\(\)/
     );
     expect(SURFACE_MAIN_LUA).toMatch(/pagePrev\(\)/);
+    // The pageMutating re-entry guard is gone (delta=0 echo-suppression
+    // handles the same case automatically).
+    expect(SURFACE_MAIN_LUA).not.toContain("pageMutating");
+    // applyPage(page * 4) was the absolute-mapping call -- gone too.
+    expect(SURFACE_MAIN_LUA).not.toMatch(/applyPage\(page\s*\*\s*4\)/);
+    // pagePrev / pageNext are still defined (btnBack/btnNext call them) but
+    // no longer wired from the encoder-1-unfocused branch.
+    expect(SURFACE_MAIN_LUA).toMatch(/function pagePrev\(/);
+    expect(SURFACE_MAIN_LUA).toMatch(/function pageNext\(/);
+    expect(SURFACE_MAIN_LUA).not.toMatch(
+      /if\s+focusedIdx\s+==\s+nil\s+then[\s\S]{0,500}?if\s+id\s+==\s+1\s+then[\s\S]{0,300}?pageNext\(\)/
+    );
     // Phase 3: the unfocused empty state is the 4-column mini-view, not
-    // the "touch a value" placeholder. drawMiniView reuses fmtValue (unit
-    // suffix included) for the per-column value text.
+    // the "touch a value" placeholder.
     expect(SURFACE_MAIN_LUA).toContain("local function drawMiniView(");
     expect(SURFACE_MAIN_LUA).toContain("drawMiniView()");
     expect(SURFACE_MAIN_LUA).not.toContain('"touch a value"');
-    expect(SURFACE_MAIN_LUA).toMatch(/drawMiniView[\s\S]{0,3000}?fmtValue/);
+    // v29 Phase A: drawMiniView dispatches on field kind to a curated set of
+    // mini renderers. The old Phase-3 cellRect/horizontal-slider painter
+    // inside drawMiniView is gone (cellRect stays for the focused-mode
+    // drawToggle).
+    expect(SURFACE_MAIN_LUA).toContain("local function drawMiniSeg(");
+    expect(SURFACE_MAIN_LUA).toContain("local function drawMiniDigit(");
+    expect(SURFACE_MAIN_LUA).toContain("local function drawMini7Seg(");
+    expect(SURFACE_MAIN_LUA).toContain("local function drawMiniRangedNumber(");
+    expect(SURFACE_MAIN_LUA).toContain("local function drawMiniOptionList(");
+    expect(SURFACE_MAIN_LUA).not.toMatch(/local function drawMiniView[\s\S]{0,4000}?cellRect\(/);
+    // Zoomed-view range bar: drawReadout paints a vertical bar (dim bg +
+    // bright bottom-up fill) when the focused number has min/max.
+    expect(SURFACE_MAIN_LUA).toMatch(
+      /Vertical range bar to the right of the digit row[\s\S]{0,1200}?fillRect\(barX/
+    );
+    // v29 Phase B: reconfigureEncoders defined and invoked at every focus-
+    // mutation site (focusSlot, ssp C, ssp A, applyPage, btnClear, onLoad,
+    // onReady, onEnter = 8 invocations + 1 definition).
+    expect(SURFACE_MAIN_LUA).toContain("local function reconfigureEncoders(");
+    const reconfCalls = (SURFACE_MAIN_LUA.match(/reconfigureEncoders\(\)/g) ?? []).length;
+    expect(reconfCalls).toBeGreaterThanOrEqual(9);
+    // Encoder 1 renamed by mode; encoders 2-4 hidden/restored.
+    expect(SURFACE_MAIN_LUA).toContain('c1:setName("Page")');
+    expect(SURFACE_MAIN_LUA).toContain('c1:setName("")');
+    expect(SURFACE_MAIN_LUA).toMatch(/c:setVisible\(false\)/);
+    expect(SURFACE_MAIN_LUA).toMatch(/c:setVisible\(true\)/);
   });
 
   it("preset JSON has 4 pad controls at potIds 9-12 for hardware buttons 3-6", () => {

@@ -73,10 +73,11 @@ describe("surface payload round-trip", () => {
     expect(decoded?.fields[2].options).toEqual(["a", "b"]);
   });
 
-  it("locks the SSP column order (unit before options)", () => {
+  it("locks the SSP column order (unit before options, hasAlpha last)", () => {
     // Direct format assertion so a future shuffle of column indices breaks
     // loudly. Columns: F | idx | kind | label | value | min | max | step |
-    // precision | unit | options. Separator is the ASCII unit-separator 0x1F.
+    // precision | unit | options | hasAlpha. Separator is the ASCII
+    // unit-separator 0x1F. hasAlpha is "" for non-color fields.
     const US = String.fromCharCode(0x1f);
     const RS = String.fromCharCode(0x1e);
     const enc = encodeSurfacePayload({
@@ -88,7 +89,7 @@ describe("surface payload round-trip", () => {
       }]
     });
     const row = enc.split(RS)[1].split(US);
-    expect(row).toEqual(["F", "7", "number", "L", "V", "1", "2", "3", "4", "m", "o"]);
+    expect(row).toEqual(["F", "7", "number", "L", "V", "1", "2", "3", "4", "m", "o", ""]);
   });
 
   it("decodeSurfacePayload rejects a non-A payload", () => {

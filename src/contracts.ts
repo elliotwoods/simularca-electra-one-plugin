@@ -56,6 +56,9 @@ export interface StringParameterDefinition extends ParameterDefinitionBase {
 }
 export interface ColorParameterDefinition extends ParameterDefinitionBase {
   type: "color";
+  /** When true the colour carries an alpha channel; the device's drilled-in
+   *  editor binds encoder 4 to alpha instead of HSV V. */
+  alpha?: boolean;
 }
 export interface Vector3ParameterDefinition extends ParameterDefinitionBase {
   type: "vector3";
