@@ -52,6 +52,7 @@ import type {
 import { decodeDeviceRaw, decodeDirectNumber, mapInspectorToSurface } from "./inspectorMapping";
 import {
   clearCommand,
+  setTransportCommand,
   decodeDeviceLine,
   setActorCommand,
   setFieldValueCommand,
@@ -221,6 +222,10 @@ export class ElectraSession {
 
   // Surface (SSP) state.
   private applyFn: SurfaceApplyFn | null = null;
+  private transportToggleFn: (() => void) | null = null;
+  /** Last transport-state we pushed to the device, so we don't spam `ssp T`
+   *  on every host re-render when nothing changed. */
+  private lastPushedTransportPlaying: boolean | null = null;
   private snapshot: PluginHostActorSnapshot | null = null;
   /** Test-surface param values, or null when the test surface is disabled. */
   private testParams: ParameterValues | null = null;
@@ -362,6 +367,25 @@ export class ElectraSession {
   /** The runtime component injects the host param-write path here. */
   setApply(fn: SurfaceApplyFn | null): void {
     this.applyFn = fn;
+  }
+
+  /** The runtime component injects the host transport-toggle path here.
+   *  Fired when the device emits `scp btn playpause`. */
+  setTransportToggle(fn: (() => void) | null): void {
+    this.transportToggleFn = fn;
+  }
+
+  /** Push the host's transport state to the device so the Play/Pause pad
+   *  label + colour mirror it. No-op while not ready and on no-change. */
+  setTransportPlaying(playing: boolean): void {
+    if (this.state.phase !== "ready" || !this.state.presetSlot || !this.handle) {
+      return;
+    }
+    if (this.lastPushedTransportPlaying === playing) {
+      return;
+    }
+    this.lastPushedTransportPlaying = playing;
+    this.sendSsp(setTransportCommand(playing));
   }
 
   /** Called by the runtime whenever the editor selection / its params change. */
@@ -562,14 +586,24 @@ export class ElectraSession {
     } else if (ev?.type === "dvalue") {
       this.onDeviceDirect(ev.idx, ev.value);
     } else if (ev?.type === "focus") {
-      this.state.focusedSlot = ev.idx;
-      this.log("info", `device: focused field ${ev.idx}`);
+      if (ev.idx < 0) {
+        this.state.focusedSlot = null;
+        this.log("info", "device: defocused (page scrolled focus off-screen)");
+      } else {
+        this.state.focusedSlot = ev.idx;
+        this.log("info", `device: focused field ${ev.idx}`);
+      }
     } else if (ev?.type === "ready") {
       this.log("info", `device: surface ready (bundle ${ev.bundle ?? "?"})`);
     } else if (ev?.type === "button") {
-      // Log-only for now. Host action wiring (Play/Pause etc.) is intentionally
-      // out of scope -- add a switch on ev.action here when wiring lands.
       this.log("info", `device: button ${ev.action}`);
+      if (ev.action === "playpause" && this.transportToggleFn) {
+        // The host transport toggle. On the next host re-render the bridge's
+        // transportPlaying flips, the runtime calls setTransportPlaying here,
+        // and the device sees `ssp T<0|1>` -- which updates the pad label
+        // to "Play"/"Pause" -- closing the round trip.
+        this.transportToggleFn();
+      }
     } else if (ev?.type === "log") {
       this.log("info", `device: ${ev.text}`);
     }
@@ -701,6 +735,7 @@ export class ElectraSession {
       // The device may have been power-cycled (empty Lua state) since we last
       // pushed; force a full re-push so the surface is restored on reconnect.
       this.descriptor = null;
+      this.lastPushedTransportPlaying = null;
       this.set(
         "ready",
         `Surface already provisioned (v${onDevice}) at bank ${bank} slot ${slot}. Device is live.`
@@ -792,6 +827,7 @@ export class ElectraSession {
     // pushSurface() re-sends a full SET_ACTOR — the (test) surface appears on
     // the device immediately after provisioning, not on the next selection.
     this.descriptor = null;
+    this.lastPushedTransportPlaying = null;
     this.set(
       "ready",
       `Provisioned to bank ${bank} slot ${slot}. Device shows "Simularca v${ver ?? "?"}".`

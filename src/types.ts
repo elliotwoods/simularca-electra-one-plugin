@@ -133,7 +133,54 @@ export interface ElectraLogEntry {
  *  null disables the firmware gate until then. */
 export const MIN_FIRMWARE: string | null = null;
 
-/** Bumped whenever preset.json or any Lua module changes (SPEC §4.1). v27 =
+/** Bumped whenever preset.json or any Lua module changes (SPEC §4.1). v31 =
+ *  v30 plus two fixes. (a) `setColor` on fw v4.1.4 takes a NUMERIC argument
+ *  (Lua hex literal `0xRRGGBB`), not a hex string -- empirically verified
+ *  via the live debug bridge ("number expected, got string" thrown on a
+ *  string-arg call); v30 silently pcall-swallowed and the Play/Pause pad
+ *  stayed teal while playing. Now flips teal->red on play. (b) `applyPage`
+ *  defocuses when the zoomed-in field scrolls off-screen ("if the zoomed-in
+ *  control is no longer in the zoomed-out view, zoom out" rule) -- emits
+ *  `scp focus -1`; sspCodec/decodeDeviceLine focus regex now accepts a
+ *  negative index, and connectionState treats idx<0 as `focusedSlot = null`.
+ *  v30 =
+ *  live Play/Pause: pad labels align with the right 4/6 of the screen (Mini
+ *  buttons 1-2 = fixed MENU/CONTEXT on the left; assignable buttons 3-6 are
+ *  on the right), per-button colours (Back/Next blue, Clear orange, Play
+ *  teal/green), and a new host->device protocol message `ssp("T<0|1>")`
+ *  that updates the Play/Pause pad label ("Play"<->"Pause") + colour
+ *  (teal<->red) to mirror the host's `state.time.running`. PluginHostBridge
+ *  gained `transportPlaying:boolean` + `toggleTransport()` (both on the host
+ *  pluginApi.ts and the plugin contract mirror); the device->host
+ *  `scp btn playpause` button event now toggles the host transport via the
+ *  bridge. v29 =
+ *  ports the JX-3P (Organix Mod) preset's working hardware-button shape to
+ *  our pads. Each pad now ships with
+ *  `message:{type:"none",deviceId:1,parameterNumber:100+(id-10),onValue:127}`
+ *  and `visible:true` + on-canvas bounds at y=362 h=51 (matches JX-3P).
+ *  Empirically `message:{type:"none"}` is the firmware's "input-bound but
+ *  no-MIDI" registration; without it the firmware treats the pad as
+ *  decorative (v26/v27 silent-press dead-end was the missing message field,
+ *  hardware-verified via the live debug bridge against the JX-3P reference).
+ *  `preset.userFunctions` (v27) stays in place pending on-device
+ *  confirmation that pad dispatch fires without manual user-binding. v28 =
+ *  v27 plus the focus-state overhaul. (a) Phase 1: SET_ACTOR unconditionally
+ *  clears `focusedIdx`/`editing` so a selection change drops the centre
+ *  band back to the empty/mini-view state (the old guarded clear left it
+ *  zoomed on a different actor's field at the same absolute index).
+ *  (b) Phase 1B: the third hardware-button pad becomes "Clear" (was
+ *  "Spare"); `btnClear` defocuses and emits `scp btn clear` for host
+ *  logging -- a hardware shortcut to the same defocus semantics.
+ *  (c) Phase 2: in unfocused mode the top-left encoder (id 1) pages
+ *  through >4 fields via `detailChanged` (pageNext/pagePrev on delta
+ *  sign); focused mode preserves the digit-place pan exactly. Encoders
+ *  2/3/4 stay silent in unfocused mode (reserved). (d) Phase 3: the
+ *  "touch a value" empty-state placeholder is replaced by a 4-column
+ *  `drawMiniView` painting label + per-kind indicator (ON/OFF cells for
+ *  toggles; horizontal slider for ranged numbers; nothing for the rest)
+ *  + value text (reusing `fmtValue`, including the v25 unit suffix).
+ *  Touching a bottom-row encoder still focuses that field; the scrollbar
+ *  continues to render below. v27 =
  *  v26 plus a restored `preset.userFunctions` table (Back/Next/Spare/
  *  Play-Pause) -- the working route on fw v4.1.4 for hardware buttons 3-6,
  *  requiring a one-time per-device bind via the Mini's Preset Menu. v26's
@@ -200,7 +247,7 @@ export const MIN_FIRMWARE: string | null = null;
  *  v22 = adds the `triangle` cap style (authentic linear-taper hexagon 7-seg;
  *  reuses round's RLE + polygon's transposed vertical stretch). flat/round/
  *  polygon Lua unchanged except this version stamp. */
-export const SURFACE_BUNDLE_VERSION = 27;
+export const SURFACE_BUNDLE_VERSION = 31;
 
 /** Preset name marker used for cheap discovery on the device (SPEC §4.2). */
 export const SURFACE_PRESET_MARKER = "Simularca Surface";

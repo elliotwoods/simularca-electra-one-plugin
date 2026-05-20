@@ -371,13 +371,17 @@ never overwrite. Long labels → device-side shortening. Firmware <
   focus (persists until another value is touched). A centre `type:"custom"`
   control paints the focused value as a **7-segment** readout (Lua
   `graphics.fillRect` segment renderer — works around the tiny system font)
-  plus a **scrollbar**; **Back/Next/Spare/Play-Pause** are exposed via
-  `preset.userFunctions` (one-time Preset-Menu bind per device) calling Lua
-  handlers `btnBack`/`btnNext`/`btnSpare`/`btnPlayPause`. v26 also wires
-  four `type:"pad"` controls at potIds 9-12 reusing the same handlers, as
-  a forward-looking hedge — empirically dormant on fw v4.1.4 (hardware
-  buttons emit nothing to a preset's Lua) but ready for any future
-  firmware that dispatches them. Pages cycle 4 fields at a time (host
+  plus a **scrollbar**; **Back/Next/Clear/Play-Pause** fire directly on
+  hardware-button press via `type:"pad"` preset controls at potIds 9-12
+  (v29, ported from the JX-3P Organix Mod preset's working shape — each
+  pad carries `message:{type:"none",...}`, the firmware's input-binding
+  marker that routes presses to the Lua handlers `btnBack`/`btnNext`/
+  `btnClear`/`btnPlayPause` without emitting MIDI). v26/v27 attempted
+  this with a message-less pad shape; empirically dormant on fw v4.1.4 —
+  the `message:{type:"none"}` field was the missing piece.
+  `preset.userFunctions` is also populated as a belt-and-braces fallback
+  for any firmware revision that doesn't dispatch pads. Pages cycle 4
+  fields at a time (host
   sends all visible fields, `MAX_FIELDS=64`; device reports **absolute**
   indices). No encoder-push, no DRILL page, no "Edit" user-function.
   `digits.ts` math reused unchanged. Host tracks

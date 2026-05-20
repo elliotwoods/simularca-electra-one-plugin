@@ -28,12 +28,12 @@ browser. The value encoder **directly edits the value** (scaled). A centre
 **7-segment** readout — places outside the value's range are greyed, the
 touched digit is highlighted, and **link lines** join each top encoder to its
 digit — plus a **scrollbar**. **Back / Next / Spare / Play-Pause** are
-exposed via `preset.userFunctions` and assigned to the Mini's four
-assignable hardware buttons (3-6) with a one-time bind through the
-device's Preset Menu — hardware-button dispatch direct from the preset
-is not supported on fw v4.1.4. (The bundle also ships `type:"pad"`
-controls at potIds 9-12 as a forward-looking hedge for any future
-firmware that wires them up automatically.) The digit-window pan is
+exposed via `type:"pad"` preset controls at potIds 9-12 carrying the
+JX-3P-pattern `message:{type:"none",...}` field — the firmware's
+"input-bound but no-MIDI" registration that routes hardware-button
+presses to the Lua handlers `btnBack`/`btnNext`/`btnClear`/`btnPlayPause`
+on press, no per-device user setup. `preset.userFunctions` is also
+populated as belt-and-braces. The digit-window pan is
 reached by touching a digit encoder. The actor's **Enabled, Visibility,
 Position, Rotation, Scale** are the
 first fields (via a host-bridge extension). No separate DRILL page, no

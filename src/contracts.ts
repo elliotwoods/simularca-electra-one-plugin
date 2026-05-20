@@ -174,6 +174,10 @@ export interface PluginHostBridge {
   ): void;
   updateActorEnabled(actorId: string, enabled: boolean): void;
   updateActorVisibility(actorId: string, mode: ActorVisibilityMode): void;
+  /** Current transport playback state. Mirrors `state.time.running`. */
+  transportPlaying: boolean;
+  /** Toggle transport play/pause (same effect as the Space-bar shortcut). */
+  toggleTransport(): void;
 }
 
 /* ----------------------------------------------------- plugin definition */

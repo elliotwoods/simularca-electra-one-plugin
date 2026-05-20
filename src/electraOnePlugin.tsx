@@ -91,7 +91,23 @@ export function ElectraOneRuntime(props: PluginRuntimeComponentProps) {
       }
       host.updateActorParams(actorId, { [key]: value }, opts);
     });
+    // Transport: device's Play/Pause pad fires this; we forward to the host.
+    sharedSession?.setTransportToggle(() => host.toggleTransport());
   }, [host]);
+
+  // Push the host transport state to the device so the Play/Pause pad label
+  // (and colour) mirrors `state.time.running`. Fires both directions:
+  // device→host (button press toggles host) and host→device (any toggle,
+  // incl. Space-bar or the toolbar button, repaints the pad label). The
+  // session early-returns until phase === "ready", and we re-fire on phase
+  // transitions so the initial state lands right after (re)provision.
+  const sessionPhase = useSyncExternalStore(
+    (onChange) => (sharedSession ? sharedSession.subscribe(onChange) : () => {}),
+    () => sharedSession?.getState().phase ?? "unavailable"
+  );
+  useEffect(() => {
+    sharedSession?.setTransportPlaying(host.transportPlaying);
+  }, [host.transportPlaying, sessionPhase]);
 
   const sel = props.host.selectedActors[0] ?? null;
   // Signature covers params + schema + transform/enabled/visibility so any of

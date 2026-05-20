@@ -7,6 +7,7 @@ import {
   sanitizeToken,
   setActorCommand,
   setFieldValueCommand,
+  setTransportCommand,
   type SurfaceDescriptor
 } from "../src/sspCodec";
 
@@ -103,6 +104,9 @@ describe("command framing", () => {
     expect(cmd.slice(5, -2)).not.toMatch(/["\\]/);
     expect(setFieldValueCommand(3, "9")).toContain('ssp("V');
     expect(clearCommand()).toBe('ssp("C")');
+    // v30: host pushes transport state via `ssp("T<0|1>")`.
+    expect(setTransportCommand(true)).toBe('ssp("T1")');
+    expect(setTransportCommand(false)).toBe('ssp("T0")');
   });
 });
 
@@ -113,6 +117,9 @@ describe("decodeDeviceLine", () => {
     expect(decodeDeviceLine("scp drill 5")).toEqual({ type: "drill", idx: 5 });
     expect(decodeDeviceLine("scp drillx")).toEqual({ type: "drillexit" });
     expect(decodeDeviceLine("scp focus 2")).toEqual({ type: "focus", idx: 2 });
+    // v31: `scp focus -1` is the defocus signal (focused field scrolled
+    // off-screen via paging); the host treats idx<0 as null focus.
+    expect(decodeDeviceLine("scp focus -1")).toEqual({ type: "focus", idx: -1 });
     expect(decodeDeviceLine("simularca:ready bundle=4")).toEqual({ type: "ready", bundle: 4 });
     expect(decodeDeviceLine("scp ready bundle=3")).toEqual({ type: "ready", bundle: 3 });
     // Hardware-button pads (Mini 3-6) emit `scp btn <action>`. Must sit above

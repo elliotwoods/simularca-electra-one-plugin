@@ -44,6 +44,16 @@ const STRIP_H = 70; // detail (digit) faders: screen 8..78
 const BAND_Y = 82; // readout band: screen 82..283
 const BAND_H = 201;
 const BOT_Y = 287; // value faders: screen 287..357 (clears MENU/CONTEXT)
+const BTN_Y = 362; // hardware-button pad row: screen 362..413 (matches the
+                   // JX-3P Organix Mod preset's working y=363 placement).
+const BTN_H = 51;  // matches JX-3P; leaves ~67 px below for menu chrome.
+// The Mini has 6 hardware buttons in a row across the bottom; buttons 1-2
+// are firmware-fixed (MENU, CONTEXT) on the LEFT 2/6 of the strip; buttons
+// 3-6 are the assignable ones on the RIGHT 4/6. Our 4 pad labels must align
+// with the right 4/6, NOT span the whole screen. x positions match JX-3P
+// exactly (each slot is ~133 px, width 117 leaves ~13 px between).
+const BTN_COLS = [277, 407, 537, 667];
+const BTN_W = 117;
 
 function fader(
   id: number,
@@ -72,32 +82,50 @@ function fader(
   };
 }
 
-// Hardware-button pad (Mini buttons 3-6 = potIds 9-12). Fires the named Lua
-// function on press; no MIDI is emitted, no snapshot value. `visible:false`
-// so the pad has no on-screen footprint -- it exists solely as a Lua hook.
-// If a firmware revision rejects the message-less form (provision NACK on
-// preset upload), see the fallback ladder in types.ts SURFACE_BUNDLE_VERSION
-// v26 doc-comment (add a stub message, drop momentary, try type:"button",
-// last resort poll the Message value from Lua).
+// Hardware-button pad (Mini buttons 3-6 = potIds 9-12). Shape ported from
+// the JX-3P Organix Mod preset (the user supplied it as a known-working
+// reference). The `message:{type:"none"}` field is what binds the potId to
+// hardware-button DISPATCH without emitting MIDI -- our v26/v27 attempt
+// omitted `message` entirely and the firmware silently treated each pad as
+// decorative (presses dispatched nowhere, hardware-verified via the live
+// debug bridge). `visible:true` with on-canvas bounds also appears
+// required on fw v4.1.4 (Phase 2 empirically showed `setVisible(false)` on
+// a fader killed its rotation callback; pads likely behave the same).
+// parameterNumber must be unique per pad but the value is immaterial since
+// no MIDI is sent; 100+(id-10) keeps it disjoint from the cc7 fader range
+// 1-8. `function` names a Lua global declared in the bundle
+// (btnBack/btnNext/btnClear/btnPlayPause).
 function pad(
   id: number,
   potId: number,
   fn: string,
   label: string,
-  col: number
+  col: number,
+  color: string
 ): Record<string, unknown> {
   return {
     id,
     type: "pad",
     mode: "momentary",
     name: label,
-    color: "FFFFFF",
-    bounds: [COLS[col], BOT_Y, CTRL_W, STRIP_H],
+    color,
+    bounds: [BTN_COLS[col], BTN_Y, BTN_W, BTN_H],
     pageId: 1,
     controlSetId: 1,
-    visible: false,
+    visible: true,
     inputs: [{ potId, valueId: "value" }],
-    values: [{ id: "value", function: fn }]
+    values: [
+      {
+        id: "value",
+        function: fn,
+        message: {
+          type: "none",
+          deviceId: 1,
+          parameterNumber: 100 + (id - 10),
+          onValue: 127
+        }
+      }
+    ]
   };
 }
 
@@ -124,10 +152,13 @@ function buildControls(): Record<string, unknown>[] {
   // Hardware-button pads (Mini buttons 3-6 = potIds 9-12). Ids start at 10
   // to leave 1-9 for the eight faders + custom band. Each fires a Lua handler
   // on press; no MIDI.
-  controls.push(pad(10, 9, "btnBack", "Back", 0));
-  controls.push(pad(11, 10, "btnNext", "Next", 1));
-  controls.push(pad(12, 11, "btnClear", "Clear", 2));
-  controls.push(pad(13, 12, "btnPlayPause", "Play/Pause", 3));
+  // Colors from the Electra standard palette: blue for nav (Back/Next as a
+  // related pair), orange for the state-breaking Clear, green for the
+  // transport go-action Play/Pause.
+  controls.push(pad(10, 9, "btnBack", "Back", 0, "529DEC"));
+  controls.push(pad(11, 10, "btnNext", "Next", 1, "529DEC"));
+  controls.push(pad(12, 11, "btnClear", "Clear", 2, "F49500"));
+  controls.push(pad(13, 12, "btnPlayPause", "Play", 3, "03A598"));
   return controls;
 }
 
@@ -705,12 +736,58 @@ local function drawUnit(unit, x, y, w, h, discHW, r)
   end
 end
 
+-- ---- 4-column mini-view (unfocused/empty state) ----
+-- Painted in the centre band when no field is focused. One column per
+-- currently-visible bottom-row field (pageOffset + 0..3), x-aligned with
+-- the value encoders beneath. Reuses fmtValue (unit suffix included),
+-- cellRect/cellLabel (toggle), and the COL_* colour constants. fillRect
+-- budget per frame is ~3-4 rects per number + ~12 per toggle -- 10-20x
+-- cheaper than the focused multi-digit readout, so perf is comfortable.
+local function drawMiniView()
+  local CW = 184
+  local labelY = 4
+  local indY = 22
+  local indH = 36
+  local valueY = 64
+  for i = 0, 3 do
+    local abs = pageOffset + i
+    local f = slots[abs]
+    if f ~= nil then
+      local cx = i * 200 + 8
+      graphics.setColor(0x9fb4cf)
+      graphics.print(cx, labelY, f.label, CW, CENTER)
+      if f.kind == "toggle" then
+        local on = (f.value == "1")
+        local cellW = math.floor((CW - 8) / 2)
+        cellRect(cx, indY, cellW, indH, not on)
+        cellLabel(cx, indY, cellW, indH, "OFF", not on)
+        cellRect(cx + cellW + 8, indY, cellW, indH, on)
+        cellLabel(cx + cellW + 8, indY, cellW, indH, "ON", on)
+      elseif f.kind == "number" and f.mn ~= nil and f.mx ~= nil and f.mx > f.mn then
+        local v = tonumber(f.value) or 0
+        local ratio = (v - f.mn) / (f.mx - f.mn)
+        if ratio < 0 then ratio = 0 end
+        if ratio > 1 then ratio = 1 end
+        local trackH = 8
+        local trackY = indY + math.floor((indH - trackH) / 2)
+        graphics.setColor(COL_GREY)
+        graphics.fillRect(cx, trackY, CW, trackH)
+        local thumbW = 12
+        local thumbX = cx + math.floor((CW - thumbW) * ratio)
+        graphics.setColor(COL_NORMAL)
+        graphics.fillRect(thumbX, trackY - 2, thumbW, trackH + 4)
+      end
+      graphics.setColor(COL_NORMAL)
+      graphics.print(cx, valueY, fmtValue(f), CW, CENTER)
+    end
+  end
+end
+
 local function drawReadout()
   digitCx = {}
   local f = focusedIdx ~= nil and slots[focusedIdx] or nil
   if f == nil then
-    graphics.setColor(0x6f86a8)
-    graphics.print(0, math.floor(BANDH / 2) - 8, "touch a value", 800, CENTER)
+    drawMiniView()
     return
   end
   -- The variable title is shown on the 4 digit-place knob controls for
@@ -986,6 +1063,25 @@ function ssp(cmd)
     repaint()
     return
   end
+  -- Transport state push from the host: "T1" = playing, "T0" = paused.
+  -- Update the Play/Pause pad (id 13) label + colour so the device mirrors
+  -- the app's transport state visibly. setColor takes a NUMBER on fw v4.1.4
+  -- (the hex literals match the preset JSON string colours), NOT a string --
+  -- empirically verified via the live debug bridge ("number expected, got
+  -- string" thrown by a string-arg call).
+  if string.sub(cmd, 1, 1) == "T" then
+    local on = (string.sub(cmd, 2, 2) == "1")
+    pcall(function()
+      local c = controls.get(13)
+      if c == nil then return end
+      c:setName(on and "Pause" or "Play")
+      if c.setColor ~= nil then
+        c:setColor(on and 0xF45C51 or 0x03A598)
+      end
+      c:repaint()
+    end)
+    return
+  end
   local recs = splitc(cmd, RS)
   local head = splitc(recs[1] or "", US)
   if head[1] == "A" then
@@ -1162,6 +1258,21 @@ function detailChanged(valueObject, value)
   local id, ctrl = potOf(valueObject, 1)
   local knob = id - 1
   if focusedIdx == nil then
+    -- Unfocused: encoder 1 (top-left) pages through >4 fields, mirroring
+    -- the btnBack/btnNext hardware buttons. Encoders 2/3/4 stay silent in
+    -- this mode (reserve for future). Focused mode below preserves the
+    -- digit-place pan behaviour exactly.
+    if id == 1 then
+      local prev = lastPot[id] or value
+      local delta = value - prev
+      lastPot[id] = value
+      if delta > 0 then
+        pageNext()
+      elseif delta < 0 then
+        pagePrev()
+      end
+      recenter(ctrl, id)
+    end
     return
   end
   local f = slots[focusedIdx]
@@ -1236,6 +1347,15 @@ local function applyPage(off)
     off = maxOff
   end
   pageOffset = off
+  -- If the zoomed-in centre band is attached to a field no longer in the
+  -- visible 4-field window, drop focus so the band falls back to mini-view
+  -- (the "if the zoomed-in control isn't in the zoomed-out view, zoom out"
+  -- rule). Tell the host so its focusedSlot UI hint stays in sync.
+  if focusedIdx ~= nil and (focusedIdx < pageOffset or focusedIdx >= pageOffset + 4) then
+    focusedIdx = nil
+    editing = nil
+    sspEmit("scp focus -1")
+  end
   recenterAll()
   repaint()
 end

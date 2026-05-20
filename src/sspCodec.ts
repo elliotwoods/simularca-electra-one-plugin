@@ -137,6 +137,12 @@ export function clearCommand(): string {
   return luaCall("C");
 }
 
+/** Push the host's transport play state to the device. The device-side `ssp`
+ *  handler (T branch) updates the Play/Pause pad's label + colour to match. */
+export function setTransportCommand(playing: boolean): string {
+  return luaCall("T" + (playing ? "1" : "0"));
+}
+
 /* ----------------------------------------------------- device → host */
 
 export type DeviceEvent =
@@ -184,7 +190,10 @@ export function decodeDeviceLine(line: string): DeviceEvent | null {
   if (t === "scp drillx") {
     return { type: "drillexit" };
   }
-  m = /^scp\s+focus\s+(\d+(?:\.\d+)?)$/.exec(t);
+  // `-1` (or any negative) is the device's "defocus" / "back to mini-view"
+  // signal, emitted when a page change scrolls the focused field off-screen
+  // (the zoom-out rule). connectionState treats idx < 0 as null focus.
+  m = /^scp\s+focus\s+(-?\d+(?:\.\d+)?)$/.exec(t);
   if (m) {
     return { type: "focus", idx: idx(m[1]) };
   }
