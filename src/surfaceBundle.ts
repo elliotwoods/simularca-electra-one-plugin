@@ -94,7 +94,7 @@ function fader(
 // parameterNumber must be unique per pad but the value is immaterial since
 // no MIDI is sent; 100+(id-10) keeps it disjoint from the cc7 fader range
 // 1-8. `function` names a Lua global declared in the bundle
-// (btnBack/btnNext/btnClear/btnPlayPause).
+// (btnReset/btnPlayPause as of v37).
 function pad(
   id: number,
   potId: number,
@@ -149,15 +149,18 @@ function buildControls(): Record<string, unknown>[] {
     controlSetId: 1,
     visible: true
   });
-  // Hardware-button pads (Mini buttons 3-6 = potIds 9-12). Ids start at 10
-  // to leave 1-9 for the eight faders + custom band. Each fires a Lua handler
-  // on press; no MIDI.
-  // Colors from the Electra standard palette: blue for nav (Back/Next as a
-  // related pair), orange for the state-breaking Clear, green for the
-  // transport go-action Play/Pause.
-  controls.push(pad(10, 9, "btnBack", "Back", 0, "529DEC"));
-  controls.push(pad(11, 10, "btnNext", "Next", 1, "529DEC"));
-  controls.push(pad(12, 11, "btnClear", "Clear", 2, "F49500"));
+  // Hardware-button pads. Layout reworked in v37: Back/Next paging is now
+  // covered by the top-left page encoder, and Clear-to-defocus is now the
+  // automatic touch-off behaviour, so those three pads are gone. The remaining
+  // pads are:
+  //   - col 2 (hw button 5): Reset to default. Hidden when not zoomed-in
+  //     onto a field that declares a default (reconfigureButtons() at runtime
+  //     toggles setVisible based on focus + hasDefault).
+  //   - col 3 (hw button 6): Play/Pause transport toggle.
+  // Pad ids are preserved across the rework: Reset takes Clear's old id 12
+  // (and orange colour) so the ssp T handler's controls.get(13) for the
+  // Play/Pause pad still resolves identically.
+  controls.push(pad(12, 11, "btnReset", "Reset", 2, "F49500"));
   controls.push(pad(13, 12, "btnPlayPause", "Play", 3, "03A598"));
   return controls;
 }
@@ -402,10 +405,35 @@ local focusedIdx = nil
 local editing = nil
 local lastPot = {}
 local highlightedKnob = nil
--- The pot that currently owns the capacitive touch. While set, touch
--- events on any other dial are ignored (an accidental brush must not steal
--- focus / move the highlight). Cleared on the owner's release.
-local touchOwner = nil
+-- v37 touch model: track every held pot in a set so focus only releases when
+-- ALL related dials are off (so the user can release the bottom dial without
+-- exiting the zoomed editor while still adjusting a top digit knob).
+--   touched    - map<potId, bool> of currently-held dials.
+--   focusAnchor - bottom potId that started the current focus (5..8). While
+--                 set, brush-touches on a DIFFERENT bottom dial are rejected
+--                 so an accidental graze can never steal focus.
+local touched = {}
+local focusAnchor = nil
+local function anyBottomHeld()
+  for id = 5, 8 do
+    if touched[id] then
+      return true
+    end
+  end
+  return false
+end
+local function anyTopHeld()
+  for id = 1, 4 do
+    if touched[id] then
+      return true
+    end
+  end
+  return false
+end
+local function shouldUnfocus()
+  -- Focus persists while any bottom anchor OR any top per-digit knob is held.
+  return (not anyBottomHeld()) and (not anyTopHeld())
+end
 local digitCx = {}
 local linkTopY = 0
 -- Discrete (toggle/list) rotary sensitivity: accumulate raw encoder delta
@@ -413,6 +441,13 @@ local linkTopY = 0
 -- one-step-per-callback). On-device tunable.
 local DISC_SENS = 5
 local discAccum = {}
+-- v39: page-change uses its own (lower) gain than the multi-select stepper
+-- because a single page is 4 fields, not one option -- 2 detents per page
+-- feels right (5 was too slow). Wiped alongside discAccum on every
+-- recenterAll() so stale partial-pages don't survive a focus / page /
+-- surface transition.
+local PAGE_SENS = 2
+local pageAccum = 0
 
 local function splitc(s, sep)
   local t = {}
@@ -1097,10 +1132,21 @@ local function drawReadout()
     drawMiniView()
     return
   end
+  -- v37 colour shift: when the bottom anchor has been released but a top
+  -- per-digit knob is still held, fade out everything OTHER than the touched
+  -- digit so the focus visibly collapses onto "the one digit I'm editing".
+  -- (Focus persists until ALL touches release -- see onPotTouchChange.)
+  local digitOnlyMode = (not anyBottomHeld()) and anyTopHeld()
+  -- Non-touched dim ratio: 50% in normal touch-on, 25% in digitOnlyMode.
+  local dimOther = digitOnlyMode and 0.25 or 0.5
   -- The variable title is shown on the 4 digit-place knob controls for
   -- numbers, so the readout heading is only drawn for non-number fields.
   if not (f.kind == "number" and editing ~= nil) then
-    graphics.setColor(0x9fb4cf)
+    local labelCol = 0x9fb4cf
+    if digitOnlyMode then
+      labelCol = dim(labelCol, 0.3)
+    end
+    graphics.setColor(labelCol)
     graphics.print(0, 2, f.label, 800, CENTER)
   end
   if f.kind == "toggle" then
@@ -1152,7 +1198,7 @@ ${discPre}
   local yTop = areaTop + math.floor((areaH - dh) / 2)
   linkTopY = yTop
   if v < 0 then
-${ghostMinus}    graphics.setColor(highlightedKnob ~= nil and dim(COL_NORMAL, 0.5) or COL_NORMAL)
+${ghostMinus}    graphics.setColor(highlightedKnob ~= nil and dim(COL_NORMAL, dimOther) or COL_NORMAL)
     drawDigit(x, yTop, dw, dh, "g", discHW, r)
     x = x + dw + gap
   end
@@ -1170,10 +1216,12 @@ ${ghostMinus}    graphics.setColor(highlightedKnob ~= nil and dim(COL_NORMAL, 0.
     elseif outOfRange then
       col = COL_GREY
     end
-    -- When a digit encoder is touched, dim every non-touched digit to 50%
-    -- so the selected one stands out.
+    -- When a digit encoder is touched, dim every non-touched digit so the
+    -- selected one stands out -- 50% in normal touch-on, 25% in
+    -- digitOnlyMode (bottom released, top still held) for a stronger
+    -- "this is the one I'm editing" emphasis.
     if highlightedKnob ~= nil and not selected then
-      col = dim(col, 0.5)
+      col = dim(col, dimOther)
     end
 ${ghostDigit}    graphics.setColor(col)
     drawDigit(x, yTop, dw, dh, SEG[tostring(d)] or "", discHW, r)
@@ -1184,7 +1232,7 @@ ${ghostDigit}    graphics.setColor(col)
     if e == 0 and prec > 0 then
       local dpc = outOfRange and COL_GREY or COL_NORMAL
       if highlightedKnob ~= nil then
-        dpc = dim(dpc, 0.5)
+        dpc = dim(dpc, dimOther)
       end
       graphics.setColor(dpc)
       graphics.fillRect(x, yTop + dh - dt * 2, dt * 2, dt * 2)
@@ -1198,7 +1246,7 @@ ${ghostDigit}    graphics.setColor(col)
     local uw = math.floor(dw * 0.6)
     local uc = COL_NORMAL
     if highlightedKnob ~= nil then
-      uc = dim(uc, 0.5)
+      uc = dim(uc, dimOther)
     end
     graphics.setColor(uc)
     drawUnit(f.unit, x, yTop, uw, dh, discHW, r)
@@ -1229,11 +1277,18 @@ function paint()
   -- link lines (control-relative): a 6px vertical stub at the top aligned
   -- with the rotary control, a diagonal across, then a 6px vertical stub
   -- aligned with the digit whose bottom sits 5px above the digit top.
+  local linkDigitOnly = (not anyBottomHeld()) and anyTopHeld()
   for k = 0, 3 do
     local cx = digitCx[k]
     local ex = DETAIL_CX[k + 1]
     if cx ~= nil and ex ~= nil then
-      graphics.setColor((k == highlightedKnob) and COL_HI or 0x44607f)
+      local linkCol
+      if k == highlightedKnob then
+        linkCol = COL_HI
+      else
+        linkCol = linkDigitOnly and dim(0x44607f, 0.4) or 0x44607f
+      end
+      graphics.setColor(linkCol)
       local botY = linkTopY - 5 -- 5px above the digit top
       local botY0 = botY - 6 -- bottom stub is 6px tall
       graphics.drawLine(ex, 0, ex, 6) -- top vertical stub (6px)
@@ -1371,6 +1426,7 @@ local function recenterAll()
     setPotMid(id)
   end
   discAccum = {}
+  pageAccum = 0
 end
 
 -- Mode-switching encoder reconfig. Unfocused (zoomed-out): top-left encoder
@@ -1390,6 +1446,11 @@ local function reconfigureEncoders()
       local c1 = controls.get(1)
       if c1 ~= nil then
         c1:setName("Page")
+        -- v37: if the previous focus was a list/toggle, the focused arm
+        -- hid encoder 1 along with 2-4. Re-show it explicitly here so the
+        -- Page control is always available in zoomed-out view -- the
+        -- rename alone is invisible on a hidden control.
+        c1:setVisible(true)
       end
       for id = 2, 4 do
         local c = controls.get(id)
@@ -1407,22 +1468,60 @@ local function reconfigureEncoders()
         lastPot[1] = 64
       end)
     else
+      -- v37: list/toggle in zoomed-in hide ALL top encoders. They had no
+      -- meaningful function there (the bottom main encoder steps options)
+      -- and removing them removes the option-label clutter at the top.
+      local f = slots[focusedIdx]
+      local hideAllTop = (f ~= nil and (f.kind == "list" or f.kind == "toggle"))
       local c1 = controls.get(1)
       if c1 ~= nil then
         c1:setName("")
       end
-      for id = 2, 4 do
-        local c = controls.get(id)
-        if c ~= nil then
-          c:setVisible(true)
+      if hideAllTop then
+        for id = 1, 4 do
+          local c = controls.get(id)
+          if c ~= nil then
+            c:setVisible(false)
+          end
         end
+      else
+        -- All four top encoders are visible: encoder 1 is the digit-window
+        -- pan (number) or R channel (color), encoders 2-4 are the digit-place
+        -- editors (number) or G/B/A|V (color). Explicitly re-show encoder 1
+        -- in case the prior focus was a list/toggle that hid it.
+        for id = 1, 4 do
+          local c = controls.get(id)
+          if c ~= nil then
+            c:setVisible(true)
+          end
+        end
+        pcall(function()
+          local m = c1:getValue():getMessage()
+          m:setValue(64)
+          lastPot[1] = 64
+        end)
       end
-      pcall(function()
-        local m = c1:getValue():getMessage()
-        m:setValue(64)
-        lastPot[1] = 64
-      end)
     end
+  end)
+end
+
+-- v37 context-swap: the Reset pad (id 12) is visible ONLY when we're
+-- zoomed-in onto a field that declares a default. Wrapped in pcall because
+-- setVisible on pads is unverified on fw v4.1.4; if the firmware ignores it
+-- the pad will simply be always-present but inert when the focused field has
+-- no default (the btnReset handler short-circuits in that case).
+local function reconfigureButtons()
+  pcall(function()
+    local reset = controls.get(12)
+    if reset == nil then
+      return
+    end
+    local show = false
+    if focusedIdx ~= nil then
+      local f = slots[focusedIdx]
+      show = (f ~= nil and f.hasDefault == true)
+    end
+    reset:setVisible(show)
   end)
 end
 
@@ -1436,6 +1535,7 @@ local function focusSlot(abs)
   sspEmit("scp focus " .. abs)
   recenterAll()
   reconfigureEncoders()
+  reconfigureButtons()
   repaint()
 end
 
@@ -1462,6 +1562,7 @@ function ssp(cmd)
     editing = nil
     recenterAll()
     reconfigureEncoders()
+    reconfigureButtons()
     repaint()
     return
   end
@@ -1503,7 +1604,12 @@ function ssp(cmd)
           prec = tonumber(c[9]) or 0,
           unit = (c[10] ~= nil and c[10] ~= "") and c[10] or nil,
           opts = (c[11] ~= nil and c[11] ~= "") and splitc(c[11], ",") or nil,
-          hasAlpha = (c[12] == "1")
+          hasAlpha = (c[12] == "1"),
+          -- v37: optional default value, drives Reset pad visibility +
+          -- the host-side reset action. The default itself is held only as
+          -- a flag here -- the host owns the actual value and writes it
+          -- back through applyFn on 'scp btn reset <idx>'.
+          hasDefault = (c[13] == "1")
         }
         if idx + 1 > n then
           n = idx + 1
@@ -1523,6 +1629,7 @@ function ssp(cmd)
     editing = nil
     recenterAll()
     reconfigureEncoders()
+    reconfigureButtons()
     repaint()
   elseif head[1] == "V" then
     local idx = tonumber(head[2]) or 0
@@ -1711,16 +1818,32 @@ function detailChanged(valueObject, value)
       local prev = lastPot[id] or value
       local delta = value - prev
       lastPot[id] = value
-      if delta > 0 then
-        pageNext()
-      elseif delta < 0 then
-        pagePrev()
+      if delta ~= 0 then
+        -- v39: paginate at PAGE_SENS detents per page. Without an accumulator
+        -- every detent flipped a whole page; PAGE_SENS gives a snappier-than
+        -- -multi-select feel since a page is already 4 fields.
+        pageAccum = pageAccum + delta
+        while pageAccum >= PAGE_SENS do
+          pageAccum = pageAccum - PAGE_SENS
+          pageNext()
+        end
+        while pageAccum <= -PAGE_SENS do
+          pageAccum = pageAccum + PAGE_SENS
+          pagePrev()
+        end
       end
     end
     return
   end
   local f = slots[focusedIdx]
   if f == nil then
+    return
+  end
+  -- v37: list/toggle in zoomed-in hides all top encoders, but the firmware
+  -- may still dispatch detailChanged for a hidden-but-still-bound control.
+  -- Drop it explicitly so a stray turn can't step options through the top
+  -- row (the bottom main encoder is the sole stepper).
+  if f.kind == "list" or f.kind == "toggle" then
     return
   end
   local prev = lastPot[id] or value
@@ -1773,40 +1896,57 @@ function detailChanged(valueObject, value)
   recenter(ctrl, id)
 end
 
--- Touch a bottom value encoder = focus it (persists). Touch is hover only.
+-- v37 touch model: touching a bottom value encoder focuses the slot (and
+-- locks in as the focusAnchor so brushing a different bottom dial mid-edit
+-- cannot steal focus). Touching a top encoder previews the digit it edits.
+-- Focus releases ONLY when EVERY related touch is gone -- so the user can
+-- release the bottom dial while still adjusting a top digit knob without
+-- snapping back to mini-view.
 pcall(function()
   if events ~= nil and events.subscribe ~= nil then
     events.subscribe(POTS)
-    -- A touch "owns" the surface until released: while one dial is held,
-    -- stray capacitive touches on other dials are dropped. Rotations are
-    -- never gated -- only these touch-change events are.
-    function events.onPotTouchChange(potId, controlId, touched)
-      if touched then
-        if touchOwner ~= nil and touchOwner ~= potId then
-          return
-        end
-        touchOwner = potId
+    function events.onPotTouchChange(potId, controlId, isTouched)
+      -- Bottom-row brush guard: if a different bottom dial is anchored,
+      -- reject the brush touch outright (do NOT record it in the touched
+      -- set), so it can never extend focus past the anchor's release.
+      if isTouched and potId >= 5 and potId <= 8
+         and focusAnchor ~= nil and focusAnchor ~= potId then
+        return
+      end
+      if isTouched then
+        touched[potId] = true
       else
-        if touchOwner ~= potId then
-          return
-        end
-        touchOwner = nil
+        touched[potId] = nil
       end
       if potId >= 5 and potId <= 8 then
-        local abs = pageOffset + (potId - 5)
-        if touched and slots[abs] ~= nil then
-          focusSlot(abs)
+        if isTouched then
+          local abs = pageOffset + (potId - 5)
+          if slots[abs] ~= nil then
+            focusAnchor = potId
+            focusSlot(abs)
+          end
         end
       elseif potId >= 1 and potId <= 4 then
-        -- digit encoder touched = preview which digit it controls
-        if touched then
+        if isTouched then
           highlightedKnob = potId - 1
         elseif highlightedKnob == potId - 1 then
           highlightedKnob = nil
         end
         recenterAll()
-        repaint()
       end
+      -- Unified exit: only when EVERY relevant touch is gone does focus
+      -- release. The earliest a touch transition can fire it is the last
+      -- finger leaving the surface.
+      if shouldUnfocus() and focusedIdx ~= nil then
+        focusedIdx = nil
+        editing = nil
+        focusAnchor = nil
+        recenterAll()
+        reconfigureEncoders()
+        reconfigureButtons()
+        sspEmit("scp focus -1")
+      end
+      repaint()
     end
   end
 end)
@@ -1833,6 +1973,7 @@ local function applyPage(off)
   end
   recenterAll()
   reconfigureEncoders()
+  reconfigureButtons()
   repaint()
 end
 
@@ -1844,32 +1985,28 @@ function pageNext()
   applyPage(pageOffset + 4)
 end
 
--- Hardware-button handlers. Wired through inputs.potId 9..12 on pad controls
--- (Electra Mini buttons 3-6). Momentary pads fire press = 127 and release = 0;
--- gate on release so each physical press fires exactly once. btnBack/btnNext
--- are device-local (paging). btnClear is also device-local: it drops focus
--- back to the empty/mini-view state (a hardware shortcut to the SET_ACTOR
--- clear behaviour). btnPlayPause emits "scp btn playpause" via the file-
--- scope sspEmit so the host log can pick it up; actual host transport
--- wiring (a real Play/Pause action) is intentionally deferred.
-function btnBack(valueObject, value)
+-- Hardware-button handlers. Wired through inputs.potId 11..12 on pad controls
+-- (Electra Mini buttons 5-6). Momentary pads fire press = 127 and release = 0;
+-- gate on release so each physical press fires exactly once.
+--
+-- v37: Back/Next/Clear are gone -- paging is the top-left page encoder,
+-- defocus is automatic on touch-off (see onPotTouchChange above). What
+-- remains:
+--   - btnReset: emits "scp btn reset <idx>" so the host writes the focused
+--     field's declared defaultValue. Guards on focusedIdx + hasDefault so a
+--     stale press (e.g., focus dropped between repaint and press) is inert.
+--   - btnPlayPause: forwards to the host transport (the host applies the
+--     toggle and pushes back T0/T1, which updates the pad label).
+function btnReset(valueObject, value)
   if value == 0 then return end
-  pagePrev()
-end
-
-function btnNext(valueObject, value)
-  if value == 0 then return end
-  pageNext()
-end
-
-function btnClear(valueObject, value)
-  if value == 0 then return end
-  focusedIdx = nil
-  editing = nil
-  recenterAll()
-  reconfigureEncoders()
-  repaint()
-  sspEmit("scp btn clear")
+  if focusedIdx == nil then
+    return
+  end
+  local f = slots[focusedIdx]
+  if f == nil or f.hasDefault ~= true then
+    return
+  end
+  sspEmit("scp btn reset " .. focusedIdx)
 end
 
 function btnPlayPause(valueObject, value)
@@ -1879,19 +2016,14 @@ end
 
 -- Preset-Menu user-functions (per-device one-time bind via the Mini's
 -- Preset Menu -> User Functions, mapping each hardware button to one of the
--- entries below). The pad controls at potIds 9-12 (added in v26) would route
--- presses directly with no setup, BUT fw v4.1.4 does not dispatch hardware
--- buttons to preset pads or to any events.* handler (empirically verified:
--- BUTTONS subscription, every plausible handler name, and a catch-all
--- onPotTouchChange override all caught nothing on press). So the pads stay
--- as a forward-looking hedge for any future firmware that wires them, and
--- this table is the actual working route today. The four entries reuse the
--- same btn* functions as the pads -- their "value == 0" guard tolerates a
--- nil arg from a userFunction call (nil == 0 is false, so the action runs).
+-- entries below). The pad controls at potIds 11-12 would route presses
+-- directly with no setup, BUT fw v4.1.4 does not dispatch hardware buttons
+-- to preset pads or to any events.* handler (empirically verified). So the
+-- pads stay as a forward-looking hedge and this table is the actual working
+-- route today. v37 drops pot1/pot2 (used to be Back/Next) -- old bindings
+-- on those hardware buttons become silently inert.
 preset.userFunctions = {
-  pot1 = { call = btnBack,      name = "Back",       close = true },
-  pot2 = { call = btnNext,      name = "Next",       close = true },
-  pot3 = { call = btnClear,     name = "Clear",      close = true },
+  pot3 = { call = btnReset,     name = "Reset",      close = true },
   pot4 = { call = btnPlayPause, name = "Play/Pause", close = true }
 }
 
@@ -1910,18 +2042,21 @@ function preset.onLoad()
   registerPaint()
   recenterAll()
   reconfigureEncoders()
+  reconfigureButtons()
 end
 
 function preset.onReady()
   registerPaint()
   recenterAll()
   reconfigureEncoders()
+  reconfigureButtons()
   sspEmit("simularca:ready bundle=" .. BUNDLE_VERSION)
 end
 
 function preset.onEnter()
   recenterAll()
   reconfigureEncoders()
+  reconfigureButtons()
   sspEmit("simularca:ready bundle=" .. BUNDLE_VERSION)
 end
 `;

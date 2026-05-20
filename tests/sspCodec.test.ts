@@ -73,11 +73,13 @@ describe("surface payload round-trip", () => {
     expect(decoded?.fields[2].options).toEqual(["a", "b"]);
   });
 
-  it("locks the SSP column order (unit before options, hasAlpha last)", () => {
+  it("locks the SSP column order (unit before options, hasAlpha then hasDefault/defaultValue)", () => {
     // Direct format assertion so a future shuffle of column indices breaks
     // loudly. Columns: F | idx | kind | label | value | min | max | step |
-    // precision | unit | options | hasAlpha. Separator is the ASCII
-    // unit-separator 0x1F. hasAlpha is "" for non-color fields.
+    // precision | unit | options | hasAlpha | hasDefault | defaultValue.
+    // Separator is the ASCII unit-separator 0x1F. hasAlpha is "" for non-
+    // color fields; hasDefault/defaultValue are "" when the field carries
+    // no declared default.
     const US = String.fromCharCode(0x1f);
     const RS = String.fromCharCode(0x1e);
     const enc = encodeSurfacePayload({
@@ -85,11 +87,12 @@ describe("surface payload round-trip", () => {
       actorName: "N",
       fields: [{
         key: "k", idx: 7, kind: "number", label: "L", value: "V",
-        min: 1, max: 2, step: 3, precision: 4, unit: "m", options: ["o"]
+        min: 1, max: 2, step: 3, precision: 4, unit: "m", options: ["o"],
+        hasDefault: true, defaultValue: "9"
       }]
     });
     const row = enc.split(RS)[1].split(US);
-    expect(row).toEqual(["F", "7", "number", "L", "V", "1", "2", "3", "4", "m", "o", ""]);
+    expect(row).toEqual(["F", "7", "number", "L", "V", "1", "2", "3", "4", "m", "o", "", "1", "9"]);
   });
 
   it("decodeSurfacePayload rejects a non-A payload", () => {

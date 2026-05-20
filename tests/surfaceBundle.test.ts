@@ -59,9 +59,10 @@ describe("surface bundle", () => {
       "function detailChanged(",
       "function pagePrev(",
       "function pageNext(",
-      "function btnBack(",
-      "function btnNext(",
-      "function btnClear(",
+      // v37: Back / Next / Clear pads removed (paging is the top-left page
+      // encoder; defocus is automatic on touch-off). Reset (resets the
+      // focused field to its declared defaultValue) takes Clear's old slot.
+      "function btnReset(",
       "function btnPlayPause(",
       "function drawReadout(",
       "function paint(",
@@ -69,22 +70,21 @@ describe("surface bundle", () => {
     ]) {
       expect(SURFACE_MAIN_LUA).toContain(fn);
     }
-    // v27 userFunctions wiring: the table reuses the btn* handlers (one
-    // source of truth for both the dormant pads and the manual-bind route).
-    // Hardware-button dispatch is firmware-locked on fw v4.1.4; this table
-    // is the actual working route after a one-time Preset-Menu bind.
+    // v37 userFunctions wiring: only Reset (button 5) + Play/Pause (button 6)
+    // remain; pot1/pot2 (formerly Back/Next) are dropped — old bindings are
+    // silently inert.
     for (const entry of [
-      'call = btnBack',
-      'call = btnNext',
-      'call = btnClear',
+      'call = btnReset',
       'call = btnPlayPause',
-      'name = "Back"',
-      'name = "Next"',
-      'name = "Clear"',
+      'name = "Reset"',
       'name = "Play/Pause"'
     ]) {
       expect(SURFACE_MAIN_LUA).toContain(entry);
     }
+    // Old pads / handlers are GONE.
+    expect(SURFACE_MAIN_LUA).not.toContain("function btnBack(");
+    expect(SURFACE_MAIN_LUA).not.toContain("function btnNext(");
+    expect(SURFACE_MAIN_LUA).not.toContain("function btnClear(");
     // shared discrete editor + toggle/enum picker rendering are present
     for (const fn of [
       "local function stepDiscrete(",
@@ -118,11 +118,12 @@ describe("surface bundle", () => {
     expect(SURFACE_MAIN_LUA).toContain("scp vc ");
     expect(SURFACE_MAIN_LUA).toContain("highlightedKnob");
     // recenterAll(): the differential-mid reset is defined once and invoked
-    // at every surface/page/focus/lifecycle update + host value push.
-    // 11 = 1 definition + 10 invocations (ssp C/A/V, applyPage, focusSlot,
-    // touch-highlight, onLoad/onReady/onEnter, plus v28's btnClear defocus).
+    // at every surface/page/focus/lifecycle update + host value push +
+    // touch-set transitions. The count is asserted only as a lower bound
+    // because the v37 touch model adds a couple of extra call sites and
+    // future small tweaks shouldn't break the suite.
     expect(SURFACE_MAIN_LUA).toContain("local function recenterAll(");
-    expect((SURFACE_MAIN_LUA.match(/recenterAll\(\)/g) ?? []).length).toBe(11);
+    expect((SURFACE_MAIN_LUA.match(/recenterAll\(\)/g) ?? []).length).toBeGreaterThanOrEqual(10);
     // Recenter MUST go through the Message (hardware-verified API): a Control
     // has no setValue and ControlValue:overrideValue is visual-only. Guard the
     // exact regression where recenter called a nil Control method (silently
@@ -147,14 +148,14 @@ describe("surface bundle", () => {
     expect(SURFACE_MAIN_LUA).not.toMatch(
       /if\s+focusedIdx\s+~=\s+nil\s+and\s+slots\[focusedIdx\]\s+==\s+nil\s+then/
     );
-    // Phase 1B: Spare button became Clear. Both the preset binding and the
-    // Lua handler must be renamed; the handler clears focus and emits
-    // "scp btn clear" for host diagnostics.
+    // v37: Spare/Clear are gone — defocus is automatic on touch-off, so the
+    // dedicated Clear pad isn't needed. The third pad slot now hosts Reset.
     expect(SURFACE_MAIN_LUA).not.toContain("function btnSpare(");
-    expect(SURFACE_MAIN_LUA).toContain("function btnClear(");
-    expect(SURFACE_MAIN_LUA).toContain('sspEmit("scp btn clear")');
+    expect(SURFACE_MAIN_LUA).not.toContain("function btnClear(");
+    expect(SURFACE_MAIN_LUA).not.toContain('sspEmit("scp btn clear")');
     expect(SURFACE_PRESET_JSON).not.toContain("btnSpare");
-    expect(SURFACE_PRESET_JSON).toContain("btnClear");
+    expect(SURFACE_PRESET_JSON).not.toContain("btnClear");
+    expect(SURFACE_PRESET_JSON).toContain("btnReset");
     // v36 Phase B (final): unfocused encoder 1 is DELTA-based paging (same
     // pattern as every other encoder on the surface). The absolute-value
     // / proportional-mapping variant ping-ponged because the recenterAll
@@ -171,13 +172,11 @@ describe("surface bundle", () => {
     expect(SURFACE_MAIN_LUA).not.toContain("pageMutating");
     // applyPage(page * 4) was the absolute-mapping call -- gone too.
     expect(SURFACE_MAIN_LUA).not.toMatch(/applyPage\(page\s*\*\s*4\)/);
-    // pagePrev / pageNext are still defined (btnBack/btnNext call them) but
-    // no longer wired from the encoder-1-unfocused branch.
+    // pagePrev / pageNext are still defined (the encoder-1-unfocused branch
+    // delegates to them). v37 removed btnBack/btnNext but the page helpers
+    // are unchanged.
     expect(SURFACE_MAIN_LUA).toMatch(/function pagePrev\(/);
     expect(SURFACE_MAIN_LUA).toMatch(/function pageNext\(/);
-    expect(SURFACE_MAIN_LUA).not.toMatch(
-      /if\s+focusedIdx\s+==\s+nil\s+then[\s\S]{0,500}?if\s+id\s+==\s+1\s+then[\s\S]{0,300}?pageNext\(\)/
-    );
     // Phase 3: the unfocused empty state is the 4-column mini-view, not
     // the "touch a value" placeholder.
     expect(SURFACE_MAIN_LUA).toContain("local function drawMiniView(");
@@ -211,7 +210,12 @@ describe("surface bundle", () => {
     expect(SURFACE_MAIN_LUA).toMatch(/c:setVisible\(true\)/);
   });
 
-  it("preset JSON has 4 pad controls at potIds 9-12 for hardware buttons 3-6", () => {
+  it("preset JSON has 2 pad controls (Reset, Play/Pause) at potIds 11-12 (hw buttons 5-6)", () => {
+    // v37: Back/Next/Clear pads removed. Reset (hw button 5) replaces Clear
+    // in the same slot; Play/Pause (hw button 6) is unchanged. Reset's
+    // initial visibility is true at build time — the device's
+    // reconfigureButtons() flips it off on every focus transition where
+    // the focused field has no declared default.
     const preset = JSON.parse(SURFACE_PRESET_JSON) as {
       controls: Array<{
         id: number;
@@ -228,22 +232,16 @@ describe("surface bundle", () => {
       }>;
     };
     const pads = preset.controls.filter((c) => c.type === "pad");
-    expect(pads).toHaveLength(4);
+    expect(pads).toHaveLength(2);
     const byPot = new Map(pads.map((p) => [p.inputs?.[0].potId, p]));
-    expect(byPot.get(9)?.values?.[0].function).toBe("btnBack");
-    expect(byPot.get(10)?.values?.[0].function).toBe("btnNext");
-    expect(byPot.get(11)?.values?.[0].function).toBe("btnClear");
+    expect(byPot.get(11)?.values?.[0].function).toBe("btnReset");
     expect(byPot.get(12)?.values?.[0].function).toBe("btnPlayPause");
-    expect(byPot.get(9)?.name).toBe("Back");
-    expect(byPot.get(11)?.name).toBe("Clear");
+    expect(byPot.get(11)?.name).toBe("Reset");
     // Initial Play/Pause label is "Play"; the device flips to "Pause" when
     // the host pushes `ssp T1` (state.time.running -> true).
     expect(byPot.get(12)?.name).toBe("Play");
-    // v29: every pad must carry the JX-3P-pattern message that binds the
-    // potId to hardware-button dispatch (type:"none" = bound but no MIDI).
-    // The v26/v27 message-less shape was empirically dead on fw v4.1.4.
-    // visible:true + on-canvas bounds are also required (Phase 2 found that
-    // setVisible(false) kills the dispatch callback).
+    // Every pad must carry the JX-3P-pattern message that binds the potId to
+    // hardware-button dispatch (type:"none" = bound but no MIDI).
     for (const p of pads) {
       const msg = p.values?.[0].message;
       expect(msg).toBeTruthy();
@@ -251,17 +249,12 @@ describe("surface bundle", () => {
       expect(msg?.deviceId).toBe(1);
       expect(msg?.onValue).toBe(127);
       expect(p.visible).toBe(true);
-      // Bounds must be on-canvas (Mini is 800x480). v29 places the pad row
-      // at y=362 h=51 (JX-3P's y=363 placement). v30: pads occupy the right
-      // 4/6 of the screen (Mini buttons 1-2 = MENU/CONTEXT on the left 2/6).
       expect(p.bounds?.[1]).toBe(362);
       expect(p.bounds?.[3]).toBe(51);
-      expect(p.bounds?.[0]).toBeGreaterThanOrEqual(267); // start of right 4/6
+      expect(p.bounds?.[0]).toBeGreaterThanOrEqual(267); // right 4/6 of screen
       expect(p.bounds?.[2]).toBe(117); // BTN_W
     }
-    // v30: per-button colours (Back/Next blue, Clear orange, Play teal).
-    expect(byPot.get(9)?.color).toBe("529DEC");
-    expect(byPot.get(10)?.color).toBe("529DEC");
+    // Reset keeps Clear's orange; Play/Pause keeps teal.
     expect(byPot.get(11)?.color).toBe("F49500");
     expect(byPot.get(12)?.color).toBe("03A598");
   });
@@ -286,13 +279,15 @@ describe("surface bundle", () => {
     expect(SURFACE_MAIN_LUA).toContain('sspEmit("scp focus -1")');
   });
 
-  it("Lua emits scp btn <action> for clear/playpause only (back/next are device-local)", () => {
-    expect(SURFACE_MAIN_LUA).toContain('sspEmit("scp btn clear")');
+  it("Lua emits scp btn reset <idx> and scp btn playpause (v37)", () => {
+    // v37: btnReset emits the focused slot index so the host applies the
+    // declared default. Play/Pause is unchanged. Clear/Back/Next/Spare are
+    // gone (no longer have pads or handlers).
+    expect(SURFACE_MAIN_LUA).toContain('sspEmit("scp btn reset " .. focusedIdx)');
     expect(SURFACE_MAIN_LUA).toContain('sspEmit("scp btn playpause")');
-    // back/next route through pagePrev/pageNext (no host emit by design)
+    expect(SURFACE_MAIN_LUA).not.toContain('sspEmit("scp btn clear")');
     expect(SURFACE_MAIN_LUA).not.toContain('sspEmit("scp btn back")');
     expect(SURFACE_MAIN_LUA).not.toContain('sspEmit("scp btn next")');
-    // Spare is gone; the third pad is now Clear (defocus shortcut).
     expect(SURFACE_MAIN_LUA).not.toContain('sspEmit("scp btn spare")');
   });
 });

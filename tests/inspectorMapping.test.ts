@@ -120,8 +120,15 @@ describe("mapInspectorToSurface", () => {
     const vis = desc?.fields[1];
     expect(vis).toMatchObject({ kind: "list", value: "1" }); // "hidden" index
     expect(desc?.fields[5]).toMatchObject({ key: "@rot.0", value: "180.0" }); // rad->deg
-    // idx is reassigned sequentially incl. the prepended fields
-    expect(desc?.fields.map((f) => f.idx)).toEqual(desc?.fields.map((_, i) => i));
+    // v37 pagination keeps grouped vectors on a single 4-slot page: each of
+    // pos/rot/scl is a contiguous 3-axis group, so a group that doesn't fit
+    // in the current page wraps to the next page (the previous page is
+    // padded with a gap = a skipped idx). Layout:
+    //   page 0: @enabled(0), @visibility(1)                — 2 free slots
+    //   page 1: @pos.0(4), @pos.1(5), @pos.2(6)            — 1 free slot
+    //   page 2: @rot.0(8), @rot.1(9), @rot.2(10)           — 1 free slot
+    //   page 3: @scl.0(12), @scl.1(13), @scl.2(14), amp(15)
+    expect(desc?.fields.map((f) => f.idx)).toEqual([0, 1, 4, 5, 6, 8, 9, 10, 12, 13, 14, 15]);
     // Transform rows carry units: pos=m, rot=deg (ASCII, not "°"), scl=x.
     // Enabled / Visibility don't get a unit.
     expect(desc?.fields[0].unit).toBeUndefined();

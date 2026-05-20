@@ -89,6 +89,29 @@ export function ElectraOneRuntime(props: PluginRuntimeComponentProps) {
         host.updateActorTransform(actorId, tKey, next, opts);
         return;
       }
+      // Vector-component synthetic key from `mapFieldExpanded` (e.g. `dir.0`).
+      // Read the base param's current array, mutate the i-th slot, write the
+      // whole array back — the host bridge only accepts whole-array writes
+      // for vector params.
+      const vec = /^([^@.][^.]*)\.(\d+)$/.exec(key);
+      if (vec) {
+        const baseKey = vec[1];
+        const axis = Number(vec[2]);
+        const actor = host.selectedActors.find((a) => a.id === actorId);
+        if (!actor) {
+          return;
+        }
+        const src = actor.params[baseKey];
+        if (!Array.isArray(src)) {
+          // Base param isn't a vector; the synthetic key is stale (likely a
+          // schema change). Silently drop — descriptor will be rebuilt.
+          return;
+        }
+        const next = (src as unknown[]).slice();
+        next[axis] = value;
+        host.updateActorParams(actorId, { [baseKey]: next as ParameterValue }, opts);
+        return;
+      }
       host.updateActorParams(actorId, { [key]: value }, opts);
     });
     // Transport: device's Play/Pause pad fires this; we forward to the host.

@@ -53,6 +53,7 @@ import {
   decodeColorHex,
   decodeDeviceRaw,
   decodeDirectNumber,
+  decodeFieldValue,
   mapInspectorToSurface
 } from "./inspectorMapping";
 import {
@@ -584,6 +585,55 @@ export class ElectraSession {
     this.applyFn(eff.id, field.key, decoded, { history: false });
   }
 
+  /**
+   * Reset the focused field to its declared default. Triggered by the Reset
+   * pad on the device emitting `scp btn reset <idx>`. Strict policy: fields
+   * without an explicit `defaultValue` in the schema are silently ignored —
+   * the device-side pad is hidden for them anyway, so this is just defence
+   * against a stale focus.
+   *
+   * Unlike normal device edits (history:false, live-drag semantics), Reset
+   * writes with history:true so the user can Cmd-Z back to the pre-reset
+   * value.
+   */
+  private applyDeviceReset(idx: number): void {
+    if (!this.descriptor) {
+      this.log("warn", `reset ${idx}: ignored — no descriptor.`);
+      return;
+    }
+    const field = this.descriptor.fields.find((f) => f.idx === idx);
+    if (!field) {
+      this.log("warn", `reset ${idx}: no field at that index.`);
+      return;
+    }
+    if (!field.hasDefault || field.defaultValue == null) {
+      this.log("warn", `reset ${field.label}: no default declared.`);
+      return;
+    }
+    const decoded = decodeFieldValue(field, field.defaultValue);
+    if (decoded === undefined) {
+      this.log("warn", `reset ${field.label}: default could not be decoded.`);
+      return;
+    }
+    this.suppressKey = field.key;
+    this.suppressUntil = Date.now() + SURFACE_SUPPRESS_MS;
+    const eff = this.effectiveSnapshot();
+    if (eff?.id === TEST_ACTOR_ID && this.testParams) {
+      this.testParams = { ...this.testParams, [field.key]: decoded };
+      this.state.testSurface = this.testParams;
+      this.log("info", `reset ${field.label} -> ${String(decoded)} [test surface]`);
+      this.emit();
+      this.syncSurface();
+      return;
+    }
+    if (!this.applyFn || !eff) {
+      this.log("warn", `reset ${field.label}: NOT applied — no apply callback or actor.`);
+      return;
+    }
+    this.log("info", `reset ${field.label} (${field.key}) -> ${String(decoded)} [applied]`);
+    this.applyFn(eff.id, field.key, decoded, { history: true });
+  }
+
   private onDeviceValue(idx: number, raw: string): void {
     this.applyDeviceEdit("device edit", idx, (field) => decodeDeviceRaw(field, Number(raw)));
   }
@@ -630,6 +680,11 @@ export class ElectraSession {
         // and the device sees `ssp T<0|1>` -- which updates the pad label
         // to "Play"/"Pause" -- closing the round trip.
         this.transportToggleFn();
+      } else if (ev.action.startsWith("reset ")) {
+        const idx = Number(ev.action.slice(6));
+        if (Number.isFinite(idx)) {
+          this.applyDeviceReset(idx);
+        }
       }
     } else if (ev?.type === "log") {
       this.log("info", `device: ${ev.text}`);

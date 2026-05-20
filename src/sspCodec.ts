@@ -42,6 +42,19 @@ export interface SurfaceField {
    *  is true, but the flag drives device-side painter + encoder labelling
    *  without re-parsing the hex on every paint. */
   hasAlpha?: boolean;
+  /** True when an explicit default value is available; gates the Reset pad
+   *  visibility on the device. Encoded on the wire so the device can flip
+   *  the pad on focus transition without a host round-trip. */
+  hasDefault?: boolean;
+  /** Serialised default in the same string-encoding family as `value` — host
+   *  decodes it back through the regular `decodeFieldValue` path when the
+   *  device emits `scp btn reset <idx>`. */
+  defaultValue?: string;
+  /** Host-only pagination hint: all SurfaceFields sharing this groupKey MUST
+   *  land on the same paginated page (no split across the 4-slot window).
+   *  Not encoded on the wire — pagination is settled host-side and the
+   *  device just receives the resulting idx assignments with optional gaps. */
+  groupKey?: string;
 }
 
 export interface SurfaceDescriptor {
@@ -93,7 +106,9 @@ export function encodeSurfacePayload(desc: SurfaceDescriptor): string {
       f.precision ?? "",
       sanitizeToken(f.unit ?? "", 8),
       (f.options ?? []).map((o) => sanitizeToken(o, 16)).join(","),
-      f.kind === "color" ? (f.hasAlpha ? "1" : "0") : ""
+      f.kind === "color" ? (f.hasAlpha ? "1" : "0") : "",
+      f.hasDefault ? "1" : "",
+      f.defaultValue != null ? sanitizeToken(f.defaultValue, 24) : ""
     ].join(US)
   );
   return [head, ...rows].join(RS);
@@ -123,7 +138,9 @@ export function decodeSurfacePayload(payload: string): SurfaceDescriptor | null 
       precision: c[8] ? Number(c[8]) : undefined,
       unit: c[9] ? c[9] : undefined,
       options: c[10] ? c[10].split(",") : undefined,
-      hasAlpha: c[11] === "1" ? true : undefined
+      hasAlpha: c[11] === "1" ? true : undefined,
+      hasDefault: c[12] === "1" ? true : undefined,
+      defaultValue: c[13] ? c[13] : undefined
     });
   }
   return { actorId: "", actorName: head[1] ?? "", fields };
@@ -212,8 +229,9 @@ export function decodeDeviceLine(line: string): DeviceEvent | null {
   }
   // Hardware-button press from a pad control (Mini buttons 3-6). Must sit
   // ABOVE the generic scp-log catch-all so `scp btn playpause` doesn't
-  // regress into {type:"log"}.
-  m = /^scp\s+btn\s+(\S+)$/.exec(t);
+  // regress into {type:"log"}. Multi-token actions (e.g. `reset 7`) are
+  // packed into `action` verbatim; the consumer parses arguments off it.
+  m = /^scp\s+btn\s+(.+)$/.exec(t);
   if (m) {
     return { type: "button", action: m[1] };
   }
